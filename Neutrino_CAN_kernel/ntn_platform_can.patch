@@ -1,0 +1,2728 @@
+diff -crB --new-file linux-3.19.8-100.fc20.x86_64/drivers/net/can/Makefile linux-3.19.8-100.fc20.x86_64_ntn/drivers/net/can/Makefile
+*** linux-3.19.8-100.fc20.x86_64/drivers/net/can/Makefile	2015-02-08 23:54:22.000000000 -0300
+--- linux-3.19.8-100.fc20.x86_64_ntn/drivers/net/can/Makefile	2016-06-27 11:39:36.562277201 -0400
+***************
+*** 18,23 ****
+--- 18,24 ----
+  obj-$(CONFIG_CAN_MSCAN)		+= mscan/
+  obj-$(CONFIG_CAN_C_CAN)		+= c_can/
+  obj-$(CONFIG_CAN_M_CAN)		+= m_can/
++ obj-$(CONFIG_CAN_NTN_M_CAN)    += m_can/
+  obj-$(CONFIG_CAN_CC770)		+= cc770/
+  obj-$(CONFIG_CAN_AT91)		+= at91_can.o
+  obj-$(CONFIG_CAN_TI_HECC)	+= ti_hecc.o
+diff -crB --new-file linux-3.19.8-100.fc20.x86_64/drivers/net/can/m_can/Kconfig linux-3.19.8-100.fc20.x86_64_ntn/drivers/net/can/m_can/Kconfig
+*** linux-3.19.8-100.fc20.x86_64/drivers/net/can/m_can/Kconfig	2015-02-08 23:54:22.000000000 -0300
+--- linux-3.19.8-100.fc20.x86_64_ntn/drivers/net/can/m_can/Kconfig	2016-06-27 11:39:36.563277189 -0400
+***************
+*** 1,5 ****
+  config CAN_M_CAN
+  	depends on HAS_IOMEM
+! 	tristate "Bosch M_CAN devices"
+  	---help---
+! 	  Say Y here if you want to support for Bosch M_CAN controller.
+--- 1,24 ----
++ choice
++ 	prompt "M_CAN device support"
++ 	default CAN_NO_M_CAN
++ 	depends on HAS_IOMEM
++ 
++ config CAN_NO_M_CAN
++         depends on HAS_IOMEM
++         bool "None"
++         ---help---
++            Press enter if you do not want to support any M_CAN controller
++ 
+  config CAN_M_CAN
+  	depends on HAS_IOMEM
+! 	bool "Bosch M_CAN devices"
+! 	---help---
+! 	  Press enter if you want to support for Bosch M_CAN controller.
+! 
+! config CAN_NTN_M_CAN
+! 	depends on HAS_IOMEM
+! 	bool "Toshiba Neutrino M_CAN devices"
+  	---help---
+! 	   Press enter if you want to support for Toshiba Neutrino PCIe based M_CAN controller
+! 
+! endchoice
+diff -crB --new-file linux-3.19.8-100.fc20.x86_64/drivers/net/can/m_can/Makefile linux-3.19.8-100.fc20.x86_64_ntn/drivers/net/can/m_can/Makefile
+*** linux-3.19.8-100.fc20.x86_64/drivers/net/can/m_can/Makefile	2015-02-08 23:54:22.000000000 -0300
+--- linux-3.19.8-100.fc20.x86_64_ntn/drivers/net/can/m_can/Makefile	2016-06-27 11:39:36.563277189 -0400
+***************
+*** 3,5 ****
+--- 3,6 ----
+  #
+  
+  obj-$(CONFIG_CAN_M_CAN) += m_can.o
++ obj-$(CONFIG_CAN_NTN_M_CAN) += m_can.o
+diff -crB --new-file linux-3.19.8-100.fc20.x86_64/drivers/net/can/m_can/m_can.c linux-3.19.8-100.fc20.x86_64_ntn/drivers/net/can/m_can/m_can.c
+*** linux-3.19.8-100.fc20.x86_64/drivers/net/can/m_can/m_can.c	2015-02-08 23:54:22.000000000 -0300
+--- linux-3.19.8-100.fc20.x86_64_ntn/drivers/net/can/m_can/m_can.c	2016-06-27 11:43:00.777724157 -0400
+***************
+*** 13,319 ****
+   * warranty of any kind, whether express or implied.
+   */
+  
+! #include <linux/clk.h>
+! #include <linux/delay.h>
+! #include <linux/interrupt.h>
+! #include <linux/io.h>
+! #include <linux/kernel.h>
+! #include <linux/module.h>
+! #include <linux/netdevice.h>
+! #include <linux/of.h>
+! #include <linux/of_device.h>
+! #include <linux/platform_device.h>
+! 
+! #include <linux/can/dev.h>
+! 
+! /* napi related */
+! #define M_CAN_NAPI_WEIGHT	64
+! 
+! /* message ram configuration data length */
+! #define MRAM_CFG_LEN	8
+! 
+! /* registers definition */
+! enum m_can_reg {
+! 	M_CAN_CREL	= 0x0,
+! 	M_CAN_ENDN	= 0x4,
+! 	M_CAN_CUST	= 0x8,
+! 	M_CAN_FBTP	= 0xc,
+! 	M_CAN_TEST	= 0x10,
+! 	M_CAN_RWD	= 0x14,
+! 	M_CAN_CCCR	= 0x18,
+! 	M_CAN_BTP	= 0x1c,
+! 	M_CAN_TSCC	= 0x20,
+! 	M_CAN_TSCV	= 0x24,
+! 	M_CAN_TOCC	= 0x28,
+! 	M_CAN_TOCV	= 0x2c,
+! 	M_CAN_ECR	= 0x40,
+! 	M_CAN_PSR	= 0x44,
+! 	M_CAN_IR	= 0x50,
+! 	M_CAN_IE	= 0x54,
+! 	M_CAN_ILS	= 0x58,
+! 	M_CAN_ILE	= 0x5c,
+! 	M_CAN_GFC	= 0x80,
+! 	M_CAN_SIDFC	= 0x84,
+! 	M_CAN_XIDFC	= 0x88,
+! 	M_CAN_XIDAM	= 0x90,
+! 	M_CAN_HPMS	= 0x94,
+! 	M_CAN_NDAT1	= 0x98,
+! 	M_CAN_NDAT2	= 0x9c,
+! 	M_CAN_RXF0C	= 0xa0,
+! 	M_CAN_RXF0S	= 0xa4,
+! 	M_CAN_RXF0A	= 0xa8,
+! 	M_CAN_RXBC	= 0xac,
+! 	M_CAN_RXF1C	= 0xb0,
+! 	M_CAN_RXF1S	= 0xb4,
+! 	M_CAN_RXF1A	= 0xb8,
+! 	M_CAN_RXESC	= 0xbc,
+! 	M_CAN_TXBC	= 0xc0,
+! 	M_CAN_TXFQS	= 0xc4,
+! 	M_CAN_TXESC	= 0xc8,
+! 	M_CAN_TXBRP	= 0xcc,
+! 	M_CAN_TXBAR	= 0xd0,
+! 	M_CAN_TXBCR	= 0xd4,
+! 	M_CAN_TXBTO	= 0xd8,
+! 	M_CAN_TXBCF	= 0xdc,
+! 	M_CAN_TXBTIE	= 0xe0,
+! 	M_CAN_TXBCIE	= 0xe4,
+! 	M_CAN_TXEFC	= 0xf0,
+! 	M_CAN_TXEFS	= 0xf4,
+! 	M_CAN_TXEFA	= 0xf8,
+! };
+  
+! /* m_can lec values */
+! enum m_can_lec_type {
+! 	LEC_NO_ERROR = 0,
+! 	LEC_STUFF_ERROR,
+! 	LEC_FORM_ERROR,
+! 	LEC_ACK_ERROR,
+! 	LEC_BIT1_ERROR,
+! 	LEC_BIT0_ERROR,
+! 	LEC_CRC_ERROR,
+! 	LEC_UNUSED,
+! };
+  
+! enum m_can_mram_cfg {
+! 	MRAM_SIDF = 0,
+! 	MRAM_XIDF,
+! 	MRAM_RXF0,
+! 	MRAM_RXF1,
+! 	MRAM_RXB,
+! 	MRAM_TXE,
+! 	MRAM_TXB,
+! 	MRAM_CFG_NUM,
+! };
+  
+! /* Fast Bit Timing & Prescaler Register (FBTP) */
+! #define FBTR_FBRP_MASK		0x1f
+! #define FBTR_FBRP_SHIFT		16
+! #define FBTR_FTSEG1_SHIFT	8
+! #define FBTR_FTSEG1_MASK	(0xf << FBTR_FTSEG1_SHIFT)
+! #define FBTR_FTSEG2_SHIFT	4
+! #define FBTR_FTSEG2_MASK	(0x7 << FBTR_FTSEG2_SHIFT)
+! #define FBTR_FSJW_SHIFT		0
+! #define FBTR_FSJW_MASK		0x3
+! 
+! /* Test Register (TEST) */
+! #define TEST_LBCK	BIT(4)
+! 
+! /* CC Control Register(CCCR) */
+! #define CCCR_TEST		BIT(7)
+! #define CCCR_CMR_MASK		0x3
+! #define CCCR_CMR_SHIFT		10
+! #define CCCR_CMR_CANFD		0x1
+! #define CCCR_CMR_CANFD_BRS	0x2
+! #define CCCR_CMR_CAN		0x3
+! #define CCCR_CME_MASK		0x3
+! #define CCCR_CME_SHIFT		8
+! #define CCCR_CME_CAN		0
+! #define CCCR_CME_CANFD		0x1
+! #define CCCR_CME_CANFD_BRS	0x2
+! #define CCCR_TEST		BIT(7)
+! #define CCCR_MON		BIT(5)
+! #define CCCR_CCE		BIT(1)
+! #define CCCR_INIT		BIT(0)
+! #define CCCR_CANFD		0x10
+! 
+! /* Bit Timing & Prescaler Register (BTP) */
+! #define BTR_BRP_MASK		0x3ff
+! #define BTR_BRP_SHIFT		16
+! #define BTR_TSEG1_SHIFT		8
+! #define BTR_TSEG1_MASK		(0x3f << BTR_TSEG1_SHIFT)
+! #define BTR_TSEG2_SHIFT		4
+! #define BTR_TSEG2_MASK		(0xf << BTR_TSEG2_SHIFT)
+! #define BTR_SJW_SHIFT		0
+! #define BTR_SJW_MASK		0xf
+! 
+! /* Error Counter Register(ECR) */
+! #define ECR_RP			BIT(15)
+! #define ECR_REC_SHIFT		8
+! #define ECR_REC_MASK		(0x7f << ECR_REC_SHIFT)
+! #define ECR_TEC_SHIFT		0
+! #define ECR_TEC_MASK		0xff
+! 
+! /* Protocol Status Register(PSR) */
+! #define PSR_BO		BIT(7)
+! #define PSR_EW		BIT(6)
+! #define PSR_EP		BIT(5)
+! #define PSR_LEC_MASK	0x7
+! 
+! /* Interrupt Register(IR) */
+! #define IR_ALL_INT	0xffffffff
+! #define IR_STE		BIT(31)
+! #define IR_FOE		BIT(30)
+! #define IR_ACKE		BIT(29)
+! #define IR_BE		BIT(28)
+! #define IR_CRCE		BIT(27)
+! #define IR_WDI		BIT(26)
+! #define IR_BO		BIT(25)
+! #define IR_EW		BIT(24)
+! #define IR_EP		BIT(23)
+! #define IR_ELO		BIT(22)
+! #define IR_BEU		BIT(21)
+! #define IR_BEC		BIT(20)
+! #define IR_DRX		BIT(19)
+! #define IR_TOO		BIT(18)
+! #define IR_MRAF		BIT(17)
+! #define IR_TSW		BIT(16)
+! #define IR_TEFL		BIT(15)
+! #define IR_TEFF		BIT(14)
+! #define IR_TEFW		BIT(13)
+! #define IR_TEFN		BIT(12)
+! #define IR_TFE		BIT(11)
+! #define IR_TCF		BIT(10)
+! #define IR_TC		BIT(9)
+! #define IR_HPM		BIT(8)
+! #define IR_RF1L		BIT(7)
+! #define IR_RF1F		BIT(6)
+! #define IR_RF1W		BIT(5)
+! #define IR_RF1N		BIT(4)
+! #define IR_RF0L		BIT(3)
+! #define IR_RF0F		BIT(2)
+! #define IR_RF0W		BIT(1)
+! #define IR_RF0N		BIT(0)
+! #define IR_ERR_STATE	(IR_BO | IR_EW | IR_EP)
+! #define IR_ERR_LEC	(IR_STE	| IR_FOE | IR_ACKE | IR_BE | IR_CRCE)
+! #define IR_ERR_BUS	(IR_ERR_LEC | IR_WDI | IR_ELO | IR_BEU | \
+! 			 IR_BEC | IR_TOO | IR_MRAF | IR_TSW | IR_TEFL | \
+! 			 IR_RF1L | IR_RF0L)
+! #define IR_ERR_ALL	(IR_ERR_STATE | IR_ERR_BUS)
+! 
+! /* Interrupt Line Select (ILS) */
+! #define ILS_ALL_INT0	0x0
+! #define ILS_ALL_INT1	0xFFFFFFFF
+! 
+! /* Interrupt Line Enable (ILE) */
+! #define ILE_EINT0	BIT(0)
+! #define ILE_EINT1	BIT(1)
+! 
+! /* Rx FIFO 0/1 Configuration (RXF0C/RXF1C) */
+! #define RXFC_FWM_OFF	24
+! #define RXFC_FWM_MASK	0x7f
+! #define RXFC_FWM_1	(1 << RXFC_FWM_OFF)
+! #define RXFC_FS_OFF	16
+! #define RXFC_FS_MASK	0x7f
+! 
+! /* Rx FIFO 0/1 Status (RXF0S/RXF1S) */
+! #define RXFS_RFL	BIT(25)
+! #define RXFS_FF		BIT(24)
+! #define RXFS_FPI_OFF	16
+! #define RXFS_FPI_MASK	0x3f0000
+! #define RXFS_FGI_OFF	8
+! #define RXFS_FGI_MASK	0x3f00
+! #define RXFS_FFL_MASK	0x7f
+! 
+! /* Rx Buffer / FIFO Element Size Configuration (RXESC) */
+! #define M_CAN_RXESC_8BYTES	0x0
+! #define M_CAN_RXESC_64BYTES	0x777
+! 
+! /* Tx Buffer Configuration(TXBC) */
+! #define TXBC_NDTB_OFF		16
+! #define TXBC_NDTB_MASK		0x3f
+! 
+! /* Tx Buffer Element Size Configuration(TXESC) */
+! #define TXESC_TBDS_8BYTES	0x0
+! #define TXESC_TBDS_64BYTES	0x7
+! 
+! /* Tx Event FIFO Con.guration (TXEFC) */
+! #define TXEFC_EFS_OFF		16
+! #define TXEFC_EFS_MASK		0x3f
+! 
+! /* Message RAM Configuration (in bytes) */
+! #define SIDF_ELEMENT_SIZE	4
+! #define XIDF_ELEMENT_SIZE	8
+! #define RXF0_ELEMENT_SIZE	72
+! #define RXF1_ELEMENT_SIZE	72
+! #define RXB_ELEMENT_SIZE	16
+! #define TXE_ELEMENT_SIZE	8
+! #define TXB_ELEMENT_SIZE	72
+! 
+! /* Message RAM Elements */
+! #define M_CAN_FIFO_ID		0x0
+! #define M_CAN_FIFO_DLC		0x4
+! #define M_CAN_FIFO_DATA(n)	(0x8 + ((n) << 2))
+! 
+! /* Rx Buffer Element */
+! /* R0 */
+! #define RX_BUF_ESI		BIT(31)
+! #define RX_BUF_XTD		BIT(30)
+! #define RX_BUF_RTR		BIT(29)
+! /* R1 */
+! #define RX_BUF_ANMF		BIT(31)
+! #define RX_BUF_EDL		BIT(21)
+! #define RX_BUF_BRS		BIT(20)
+! 
+! /* Tx Buffer Element */
+! /* R0 */
+! #define TX_BUF_XTD		BIT(30)
+! #define TX_BUF_RTR		BIT(29)
+! 
+! /* address offset and element number for each FIFO/Buffer in the Message RAM */
+! struct mram_cfg {
+! 	u16 off;
+! 	u8  num;
+! };
+  
+! /* m_can private data structure */
+! struct m_can_priv {
+! 	struct can_priv can;	/* must be the first member */
+! 	struct napi_struct napi;
+! 	struct net_device *dev;
+! 	struct device *device;
+! 	struct clk *hclk;
+! 	struct clk *cclk;
+! 	void __iomem *base;
+! 	u32 irqstatus;
+! 
+! 	/* message ram configuration */
+! 	void __iomem *mram_base;
+! 	struct mram_cfg mcfg[MRAM_CFG_NUM];
+! };
+  
+! static inline u32 m_can_read(const struct m_can_priv *priv, enum m_can_reg reg)
+  {
+! 	return readl(priv->base + reg);
+  }
+  
+! static inline void m_can_write(const struct m_can_priv *priv,
+  			       enum m_can_reg reg, u32 val)
+  {
+! 	writel(val, priv->base + reg);
+  }
+  
+  static inline u32 m_can_fifo_read(const struct m_can_priv *priv,
+  				  u32 fgi, unsigned int offset)
+  {
+! 	return readl(priv->mram_base + priv->mcfg[MRAM_RXF0].off +
+! 		     fgi * RXF0_ELEMENT_SIZE + offset);
+  }
+  
+  static inline void m_can_fifo_write(const struct m_can_priv *priv,
+  				    u32 fpi, unsigned int offset, u32 val)
+  {
+! 	return writel(val, priv->mram_base + priv->mcfg[MRAM_TXB].off +
+! 		      fpi * TXB_ELEMENT_SIZE + offset);
+  }
+  
+  static inline void m_can_config_endisable(const struct m_can_priv *priv,
+--- 13,110 ----
+   * warranty of any kind, whether express or implied.
+   */
+  
+! #include "m_can.h"
+  
+! #ifdef CONFIG_CAN_NTN_M_CAN
+! #include "neutrino_pcie_drv.h"
+  
+! unsigned long NTN_CAN_REG_OFFSET[NTN_CAN_INTERFACE_MAX] = {0x35000, 0x45000};
+! unsigned long NTN_CAN_MRAM_OFFSET[NTN_CAN_INTERFACE_MAX] = {0x30000, 0x40000};
+  
+! /* *
+!  * Global variable to update can0 and can1 network device structure as pcie
+!  * private sturcture
+!  */
+! struct dev_priv can_dev_priv;
+! #endif
+  
+! inline u32 ntn_reg_read(const struct m_can_priv *priv, enum m_can_reg reg)
+! {
+!         u32 val;
+  
+!         val = ioread32(priv->reg_base + reg);
+!         NDBGPR_REG("Reg RD : Adrs = 0x%08x : Value = 0x%08x\n", reg, val);
+!         return val;
+! }
+! 
+! inline void ntn_reg_write(const struct m_can_priv *priv,
+!                                enum m_can_reg reg, u32 val)
+  {
+!         NDBGPR_REG("Reg WR : Adrs = 0x%08x : Value = 0x%08x\n", reg, val);
+!         iowrite32(val, priv->reg_base + reg);
+! #ifdef NTN_DEBUG_REG
+!         val = ioread32(priv->reg_base + reg);
+!         NDBGPR_REG("        Reg RD : Adrs = 0x%08x : Value = 0x%08x\n", reg, val);
+! #endif
+  }
+  
+! inline u32 m_can_read(const struct m_can_priv *priv, enum m_can_reg reg)
+! {
+! #ifdef CONFIG_CAN_NTN_M_CAN
+! 	return ntn_reg_read(priv, (reg+NTN_CAN_REG_OFFSET[priv->can_no]));
+! #else
+! 	return readl(priv->reg_base + reg);
+! #endif
+! }
+! 
+! inline void m_can_write(const struct m_can_priv *priv,
+  			       enum m_can_reg reg, u32 val)
+  {
+! #ifdef CONFIG_CAN_NTN_M_CAN
+!     ntn_reg_write(priv, (reg+NTN_CAN_REG_OFFSET[priv->can_no]), val);
+! #else
+! 	writel(val, priv->reg_base + reg);
+! #endif
+  }
+  
+  static inline u32 m_can_fifo_read(const struct m_can_priv *priv,
+  				  u32 fgi, unsigned int offset)
+  {
+! 	void* adrs;
+! 	u32 val;
+! 
+! 	adrs = priv->can_mram_base + priv->mcfg[MRAM_RXF0].off + fgi * RXF0_ELEMENT_SIZE + offset;
+! 	val = READ32(adrs);
+! 	NDBGPR_FIFO("FIFO RD : Adrs = 0x%p : Value = 0x%08x\n", adrs, val);
+! 	return val;
+  }
+  
+  static inline void m_can_fifo_write(const struct m_can_priv *priv,
+  				    u32 fpi, unsigned int offset, u32 val)
+  {
+! 	void* adrs;
+! 	adrs = priv->can_mram_base + priv->mcfg[MRAM_TXB].off + fpi * TXB_ELEMENT_SIZE + offset;
+! 	NDBGPR_FIFO("FIFO WR : Adrs = 0x%p : Value = 0x%08x\n", adrs, val);
+! 	WRITE32(val, adrs);
+! }
+! 
+! static inline void m_can_fifo_std_filter_write(const struct m_can_priv *priv,
+!                                     u32 fpi, unsigned int offset, u32 val)
+! {
+!         void* adrs;
+!         adrs = priv->can_mram_base + priv->mcfg[MRAM_SIDF].off + fpi * SIDF_ELEMENT_SIZE + offset;
+!         NDBGPR_FIFO("FIFO WR : Adrs = 0x%p : Value = 0x%08x\n", adrs, val);
+!         WRITE32(val, adrs);
+! }
+! 
+! 
+! static inline void m_can_fifo_ext_filter_write(const struct m_can_priv *priv,
+!                                     u32 fpi, unsigned int offset, u32 val)
+! {
+!         void* adrs;
+!         adrs = priv->can_mram_base + priv->mcfg[MRAM_XIDF].off + fpi * XIDF_ELEMENT_SIZE + offset;
+!         NDBGPR_FIFO("FIFO WR : Adrs = 0x%p : Value = 0x%08x\n", adrs, val);
+!         WRITE32(val, adrs);
+  }
+  
+  static inline void m_can_config_endisable(const struct m_can_priv *priv,
+***************
+*** 323,328 ****
+--- 114,121 ----
+  	u32 timeout = 10;
+  	u32 val = 0;
+  
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
++ 
+  	if (enable) {
+  		/* enable m_can configuration */
+  		m_can_write(priv, M_CAN_CCCR, cccr | CCCR_INIT);
+***************
+*** 339,360 ****
+  
+  	while ((m_can_read(priv, M_CAN_CCCR) & (CCCR_INIT | CCCR_CCE)) != val) {
+  		if (timeout == 0) {
+! 			netdev_warn(priv->dev, "Failed to init module\n");
+  			return;
+  		}
+  		timeout--;
+  		udelay(1);
+  	}
+  }
+  
+  static inline void m_can_enable_all_interrupts(const struct m_can_priv *priv)
+  {
+  	m_can_write(priv, M_CAN_ILE, ILE_EINT0 | ILE_EINT1);
+  }
+  
+  static inline void m_can_disable_all_interrupts(const struct m_can_priv *priv)
+  {
+  	m_can_write(priv, M_CAN_ILE, 0x0);
+  }
+  
+  static void m_can_read_fifo(struct net_device *dev, u32 rxfs)
+--- 132,158 ----
+  
+  	while ((m_can_read(priv, M_CAN_CCCR) & (CCCR_INIT | CCCR_CCE)) != val) {
+  		if (timeout == 0) {
+! 			printk(KERN_ALERT "Failed to init module\n");
+  			return;
+  		}
+  		timeout--;
+  		udelay(1);
+  	}
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  }
+  
+  static inline void m_can_enable_all_interrupts(const struct m_can_priv *priv)
+  {
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+  	m_can_write(priv, M_CAN_ILE, ILE_EINT0 | ILE_EINT1);
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  }
+  
+  static inline void m_can_disable_all_interrupts(const struct m_can_priv *priv)
+  {
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+  	m_can_write(priv, M_CAN_ILE, 0x0);
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  }
+  
+  static void m_can_read_fifo(struct net_device *dev, u32 rxfs)
+***************
+*** 366,371 ****
+--- 164,170 ----
+  	u32 id, fgi, dlc;
+  	int i;
+  
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+  	/* calculate the fifo get index for where to read data */
+  	fgi = (rxfs & RXFS_FGI_MASK) >> RXFS_FGI_OFF;
+  	dlc = m_can_fifo_read(priv, fgi, M_CAN_FIFO_DLC);
+***************
+*** 391,397 ****
+  
+  	if (id & RX_BUF_ESI) {
+  		cf->flags |= CANFD_ESI;
+! 		netdev_dbg(dev, "ESI Error\n");
+  	}
+  
+  	if (!(dlc & RX_BUF_EDL) && (id & RX_BUF_RTR)) {
+--- 190,196 ----
+  
+  	if (id & RX_BUF_ESI) {
+  		cf->flags |= CANFD_ESI;
+! 		printk(KERN_ALERT "ESI Error\n");
+  	}
+  
+  	if (!(dlc & RX_BUF_EDL) && (id & RX_BUF_RTR)) {
+***************
+*** 413,418 ****
+--- 212,218 ----
+  	stats->rx_bytes += cf->len;
+  
+  	netif_receive_skb(skb);
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  }
+  
+  static int m_can_do_rx_poll(struct net_device *dev, int quota)
+***************
+*** 421,435 ****
+  	u32 pkts = 0;
+  	u32 rxfs;
+  
+  	rxfs = m_can_read(priv, M_CAN_RXF0S);
+  	if (!(rxfs & RXFS_FFL_MASK)) {
+! 		netdev_dbg(dev, "no messages in fifo0\n");
+  		return 0;
+  	}
+  
+  	while ((rxfs & RXFS_FFL_MASK) && (quota > 0)) {
+  		if (rxfs & RXFS_RFL)
+! 			netdev_warn(dev, "Rx FIFO 0 Message Lost\n");
+  
+  		m_can_read_fifo(dev, rxfs);
+  
+--- 221,236 ----
+  	u32 pkts = 0;
+  	u32 rxfs;
+  
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+  	rxfs = m_can_read(priv, M_CAN_RXF0S);
+  	if (!(rxfs & RXFS_FFL_MASK)) {
+! 		printk(KERN_ALERT "no messages in fifo0\n");
+  		return 0;
+  	}
+  
+  	while ((rxfs & RXFS_FFL_MASK) && (quota > 0)) {
+  		if (rxfs & RXFS_RFL)
+! 			printk(KERN_ALERT "Rx FIFO 0 Message Lost\n");
+  
+  		m_can_read_fifo(dev, rxfs);
+  
+***************
+*** 438,446 ****
+  		rxfs = m_can_read(priv, M_CAN_RXF0S);
+  	}
+  
+  	if (pkts)
+  		can_led_event(dev, CAN_LED_EVENT_RX);
+! 
+  	return pkts;
+  }
+  
+--- 239,249 ----
+  		rxfs = m_can_read(priv, M_CAN_RXF0S);
+  	}
+  
++ #ifndef DISABLE_FOR_DEBUG
+  	if (pkts)
+  		can_led_event(dev, CAN_LED_EVENT_RX);
+! #endif
+! 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  	return pkts;
+  }
+  
+***************
+*** 450,456 ****
+  	struct sk_buff *skb;
+  	struct can_frame *frame;
+  
+! 	netdev_err(dev, "msg lost in rxf0\n");
+  
+  	stats->rx_errors++;
+  	stats->rx_over_errors++;
+--- 253,260 ----
+  	struct sk_buff *skb;
+  	struct can_frame *frame;
+  
+! 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+! 	printk(KERN_ALERT "msg lost in rxf0\n");
+  
+  	stats->rx_errors++;
+  	stats->rx_over_errors++;
+***************
+*** 464,469 ****
+--- 268,274 ----
+  
+  	netif_receive_skb(skb);
+  
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  	return 1;
+  }
+  
+***************
+*** 475,480 ****
+--- 280,286 ----
+  	struct can_frame *cf;
+  	struct sk_buff *skb;
+  
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+  	priv->can.can_stats.bus_error++;
+  	stats->rx_errors++;
+  
+***************
+*** 491,518 ****
+  
+  	switch (lec_type) {
+  	case LEC_STUFF_ERROR:
+! 		netdev_dbg(dev, "stuff error\n");
+  		cf->data[2] |= CAN_ERR_PROT_STUFF;
+  		break;
+  	case LEC_FORM_ERROR:
+! 		netdev_dbg(dev, "form error\n");
+  		cf->data[2] |= CAN_ERR_PROT_FORM;
+  		break;
+  	case LEC_ACK_ERROR:
+! 		netdev_dbg(dev, "ack error\n");
+  		cf->data[3] |= (CAN_ERR_PROT_LOC_ACK |
+  				CAN_ERR_PROT_LOC_ACK_DEL);
+  		break;
+  	case LEC_BIT1_ERROR:
+! 		netdev_dbg(dev, "bit1 error\n");
+  		cf->data[2] |= CAN_ERR_PROT_BIT1;
+  		break;
+  	case LEC_BIT0_ERROR:
+! 		netdev_dbg(dev, "bit0 error\n");
+  		cf->data[2] |= CAN_ERR_PROT_BIT0;
+  		break;
+  	case LEC_CRC_ERROR:
+! 		netdev_dbg(dev, "CRC error\n");
+  		cf->data[3] |= (CAN_ERR_PROT_LOC_CRC_SEQ |
+  				CAN_ERR_PROT_LOC_CRC_DEL);
+  		break;
+--- 297,324 ----
+  
+  	switch (lec_type) {
+  	case LEC_STUFF_ERROR:
+! 		printk(KERN_ALERT "stuff error\n");
+  		cf->data[2] |= CAN_ERR_PROT_STUFF;
+  		break;
+  	case LEC_FORM_ERROR:
+! 		printk(KERN_ALERT "form error\n");
+  		cf->data[2] |= CAN_ERR_PROT_FORM;
+  		break;
+  	case LEC_ACK_ERROR:
+! 		printk(KERN_ALERT "ack error\n");
+  		cf->data[3] |= (CAN_ERR_PROT_LOC_ACK |
+  				CAN_ERR_PROT_LOC_ACK_DEL);
+  		break;
+  	case LEC_BIT1_ERROR:
+! 		printk(KERN_ALERT "bit1 error\n");
+  		cf->data[2] |= CAN_ERR_PROT_BIT1;
+  		break;
+  	case LEC_BIT0_ERROR:
+! 		printk(KERN_ALERT "bit0 error\n");
+  		cf->data[2] |= CAN_ERR_PROT_BIT0;
+  		break;
+  	case LEC_CRC_ERROR:
+! 		printk(KERN_ALERT "CRC error\n");
+  		cf->data[3] |= (CAN_ERR_PROT_LOC_CRC_SEQ |
+  				CAN_ERR_PROT_LOC_CRC_DEL);
+  		break;
+***************
+*** 524,529 ****
+--- 330,336 ----
+  	stats->rx_bytes += cf->can_dlc;
+  	netif_receive_skb(skb);
+  
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  	return 1;
+  }
+  
+***************
+*** 533,551 ****
+--- 340,364 ----
+  	struct m_can_priv *priv = netdev_priv(dev);
+  	unsigned int ecr;
+  
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+  	ecr = m_can_read(priv, M_CAN_ECR);
+  	bec->rxerr = (ecr & ECR_REC_MASK) >> ECR_REC_SHIFT;
+  	bec->txerr = ecr & ECR_TEC_MASK;
+  
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  	return 0;
+  }
+  
+  static int m_can_get_berr_counter(const struct net_device *dev,
+  				  struct can_berr_counter *bec)
+  {
++ #ifndef DISABLE_FOR_DEBUG
+  	struct m_can_priv *priv = netdev_priv(dev);
+  	int err;
++ #endif
+  
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
++ #ifndef DISABLE_FOR_DEBUG
+  	err = clk_prepare_enable(priv->hclk);
+  	if (err)
+  		return err;
+***************
+*** 560,566 ****
+  
+  	clk_disable_unprepare(priv->cclk);
+  	clk_disable_unprepare(priv->hclk);
+! 
+  	return 0;
+  }
+  
+--- 373,382 ----
+  
+  	clk_disable_unprepare(priv->cclk);
+  	clk_disable_unprepare(priv->hclk);
+! #else
+! 	__m_can_get_berr_counter(dev, bec);
+! #endif
+! 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  	return 0;
+  }
+  
+***************
+*** 574,579 ****
+--- 390,396 ----
+  	struct can_berr_counter bec;
+  	unsigned int ecr;
+  
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+  	switch (new_state) {
+  	case CAN_STATE_ERROR_ACTIVE:
+  		/* error warning state */
+***************
+*** 643,668 ****
+  	struct m_can_priv *priv = netdev_priv(dev);
+  	int work_done = 0;
+  
+  	if ((psr & PSR_EW) &&
+  	    (priv->can.state != CAN_STATE_ERROR_WARNING)) {
+! 		netdev_dbg(dev, "entered error warning state\n");
+  		work_done += m_can_handle_state_change(dev,
+  						       CAN_STATE_ERROR_WARNING);
+  	}
+  
+  	if ((psr & PSR_EP) &&
+  	    (priv->can.state != CAN_STATE_ERROR_PASSIVE)) {
+! 		netdev_dbg(dev, "entered error passive state\n");
+  		work_done += m_can_handle_state_change(dev,
+  						       CAN_STATE_ERROR_PASSIVE);
+  	}
+  
+  	if ((psr & PSR_BO) &&
+  	    (priv->can.state != CAN_STATE_BUS_OFF)) {
+! 		netdev_dbg(dev, "entered error bus off state\n");
+  		work_done += m_can_handle_state_change(dev,
+  						       CAN_STATE_BUS_OFF);
+  	}
+  
+  	return work_done;
+  }
+--- 460,487 ----
+  	struct m_can_priv *priv = netdev_priv(dev);
+  	int work_done = 0;
+  
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+  	if ((psr & PSR_EW) &&
+  	    (priv->can.state != CAN_STATE_ERROR_WARNING)) {
+! 		printk(KERN_ALERT "entered error warning state\n");
+  		work_done += m_can_handle_state_change(dev,
+  						       CAN_STATE_ERROR_WARNING);
+  	}
+  
+  	if ((psr & PSR_EP) &&
+  	    (priv->can.state != CAN_STATE_ERROR_PASSIVE)) {
+! 		printk(KERN_ALERT "entered error passive state\n");
+  		work_done += m_can_handle_state_change(dev,
+  						       CAN_STATE_ERROR_PASSIVE);
+  	}
+  
+  	if ((psr & PSR_BO) &&
+  	    (priv->can.state != CAN_STATE_BUS_OFF)) {
+! 		printk(KERN_ALERT "entered error bus off state\n");
+  		work_done += m_can_handle_state_change(dev,
+  						       CAN_STATE_BUS_OFF);
+  	}
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  
+  	return work_done;
+  }
+***************
+*** 670,686 ****
+  static void m_can_handle_other_err(struct net_device *dev, u32 irqstatus)
+  {
+  	if (irqstatus & IR_WDI)
+! 		netdev_err(dev, "Message RAM Watchdog event due to missing READY\n");
+  	if (irqstatus & IR_ELO)
+! 		netdev_err(dev, "Error Logging Overflow\n");
+  	if (irqstatus & IR_BEU)
+! 		netdev_err(dev, "Bit Error Uncorrected\n");
+  	if (irqstatus & IR_BEC)
+! 		netdev_err(dev, "Bit Error Corrected\n");
+  	if (irqstatus & IR_TOO)
+! 		netdev_err(dev, "Timeout reached\n");
+  	if (irqstatus & IR_MRAF)
+! 		netdev_err(dev, "Message RAM access failure occurred\n");
+  }
+  
+  static inline bool is_lec_err(u32 psr)
+--- 489,505 ----
+  static void m_can_handle_other_err(struct net_device *dev, u32 irqstatus)
+  {
+  	if (irqstatus & IR_WDI)
+! 		printk(KERN_ALERT "Message RAM Watchdog event due to missing READY\n");
+  	if (irqstatus & IR_ELO)
+! 		printk(KERN_ALERT "Error Logging Overflow\n");
+  	if (irqstatus & IR_BEU)
+! 		printk(KERN_ALERT "Bit Error Uncorrected\n");
+  	if (irqstatus & IR_BEC)
+! 		printk(KERN_ALERT "Bit Error Corrected\n");
+  	if (irqstatus & IR_TOO)
+! 		printk(KERN_ALERT "Timeout reached\n");
+  	if (irqstatus & IR_MRAF)
+! 		printk(KERN_ALERT "Message RAM access failure occurred\n");
+  }
+  
+  static inline bool is_lec_err(u32 psr)
+***************
+*** 696,701 ****
+--- 515,521 ----
+  	struct m_can_priv *priv = netdev_priv(dev);
+  	int work_done = 0;
+  
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+  	if (irqstatus & IR_RF0L)
+  		work_done += m_can_handle_lost_msg(dev);
+  
+***************
+*** 706,711 ****
+--- 526,532 ----
+  
+  	/* other unproccessed error interrupts */
+  	m_can_handle_other_err(dev, irqstatus);
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  
+  	return work_done;
+  }
+***************
+*** 717,722 ****
+--- 538,544 ----
+  	int work_done = 0;
+  	u32 irqstatus, psr;
+  
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+  	irqstatus = priv->irqstatus | m_can_read(priv, M_CAN_IR);
+  	if (!irqstatus)
+  		goto end;
+***************
+*** 737,742 ****
+--- 559,565 ----
+  	}
+  
+  end:
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  	return work_done;
+  }
+  
+***************
+*** 746,752 ****
+--- 569,579 ----
+  	struct m_can_priv *priv = netdev_priv(dev);
+  	struct net_device_stats *stats = &dev->stats;
+  	u32 ir;
++ #ifdef CONFIG_CAN_NTN_M_CAN
++ 	u32 reg_val = 0;
++ #endif
+  
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+  	ir = m_can_read(priv, M_CAN_IR);
+  	if (!ir)
+  		return IRQ_NONE;
+***************
+*** 760,766 ****
+  	 * - state change IRQ
+  	 * - bus error IRQ and bus error reporting
+  	 */
+! 	if ((ir & IR_RF0N) || (ir & IR_ERR_ALL)) {
+  		priv->irqstatus = ir;
+  		m_can_disable_all_interrupts(priv);
+  		napi_schedule(&priv->napi);
+--- 587,594 ----
+  	 * - state change IRQ
+  	 * - bus error IRQ and bus error reporting
+  	 */
+! 	if ((ir & IR_RF0N) || (ir & IR_ERR_ALL) || (ir & IR_HPM)) {
+! 		NDBGPR_CAN("Interrupt received %08x\n", ir);
+  		priv->irqstatus = ir;
+  		m_can_disable_all_interrupts(priv);
+  		napi_schedule(&priv->napi);
+***************
+*** 770,779 ****
+--- 598,621 ----
+  	if (ir & IR_TC) {
+  		stats->tx_bytes += can_get_echo_skb(dev, 0);
+  		stats->tx_packets++;
++ #ifndef DISABLE_FOR_DEBUG
+  		can_led_event(dev, CAN_LED_EVENT_TX);
++ #endif
+  		netif_wake_queue(dev);
+  	}
+  
++ #ifdef CONFIG_CAN_NTN_M_CAN
++ 	reg_val = m_can_read(priv, 0x8028);
++ 	/* Enable CAN0[Bit8:7] & CAN1[Bit14:13] interrupt for MCU */	
++ 	ntn_reg_write(priv, 0x8028, (reg_val & ~NTN_INTC_INTMASK2_CAN_MASK));
++ 	
++ 	/* Enable ETH interrupts for MCU */
++ 	reg_val = ntn_reg_read(priv, 0x8024);
++  	reg_val &= ~(NTN_INTC_INTMASK1_ETH_MASK);
++ 	ntn_reg_write(priv, 0x8024, reg_val);
++ #endif
++ 
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  	return IRQ_HANDLED;
+  }
+  
+***************
+*** 809,833 ****
+--- 651,703 ----
+  	u16 brp, sjw, tseg1, tseg2;
+  	u32 reg_btp;
+  
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
++ 
++ 	NDBGPR_CAN("bt->brp = %d\n", bt->brp);
++ 	NDBGPR_CAN("bt->sjw = %d\n", bt->sjw);
++ 	NDBGPR_CAN("bt->prop_seg = %d\n", bt->prop_seg);
++ 	NDBGPR_CAN("bt->phase_seg1 = %d\n", bt->phase_seg1);
++ 	NDBGPR_CAN("bt->phase_seg2 = %d\n", bt->phase_seg2);
++ 
+  	brp = bt->brp - 1;
+  	sjw = bt->sjw - 1;
+  	tseg1 = bt->prop_seg + bt->phase_seg1 - 1;
+  	tseg2 = bt->phase_seg2 - 1;
++ 
++ 	NDBGPR_CAN("brp = %d\n", brp);
++ 	NDBGPR_CAN("sjw = %d\n", sjw);
++ 	NDBGPR_CAN("tseg1 = %d\n", tseg1);
++ 	NDBGPR_CAN("tseg2 = %d\n", tseg2);
++ 
+  	reg_btp = (brp << BTR_BRP_SHIFT) | (sjw << BTR_SJW_SHIFT) |
+  			(tseg1 << BTR_TSEG1_SHIFT) | (tseg2 << BTR_TSEG2_SHIFT);
++ 	
+  	m_can_write(priv, M_CAN_BTP, reg_btp);
+  
+  	if (priv->can.ctrlmode & CAN_CTRLMODE_FD) {
++ 		NDBGPR_CAN("bt->brp = %d\n", bt->brp);
++ 		NDBGPR_CAN("bt->sjw = %d\n", bt->sjw);
++ 		NDBGPR_CAN("bt->prop_seg = %d\n", bt->prop_seg);
++ 		NDBGPR_CAN("bt->phase_seg1 = %d\n", bt->phase_seg1);
++ 		NDBGPR_CAN("bt->phase_seg2 = %d\n", bt->phase_seg2);
++ 	
+  		brp = dbt->brp - 1;
+  		sjw = dbt->sjw - 1;
+  		tseg1 = dbt->prop_seg + dbt->phase_seg1 - 1;
+  		tseg2 = dbt->phase_seg2 - 1;
++ 		
++ 		NDBGPR_CAN("brp = %d\n", brp);
++ 		NDBGPR_CAN("sjw = %d\n", sjw);
++ 		NDBGPR_CAN("tseg1 = %d\n", tseg1);
++ 		NDBGPR_CAN("tseg2 = %d\n", tseg2);
++ 
+  		reg_btp = (brp << FBTR_FBRP_SHIFT) | (sjw << FBTR_FSJW_SHIFT) |
+  				(tseg1 << FBTR_FTSEG1_SHIFT) |
+  				(tseg2 << FBTR_FTSEG2_SHIFT);
+  		m_can_write(priv, M_CAN_FBTP, reg_btp);
+  	}
+  
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  	return 0;
+  }
+  
+***************
+*** 844,849 ****
+--- 714,720 ----
+  	struct m_can_priv *priv = netdev_priv(dev);
+  	u32 cccr, test;
+  
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+  	m_can_config_endisable(priv, true);
+  
+  	/* RX Buffer/FIFO Element Size 64 bytes data field */
+***************
+*** 872,879 ****
+  		    RXFC_FWM_1 | priv->mcfg[MRAM_RXF1].off);
+  
+  	cccr = m_can_read(priv, M_CAN_CCCR);
+! 	cccr &= ~(CCCR_TEST | CCCR_MON | (CCCR_CMR_MASK << CCCR_CMR_SHIFT) |
+! 		(CCCR_CME_MASK << CCCR_CME_SHIFT));
+  	test = m_can_read(priv, M_CAN_TEST);
+  	test &= ~TEST_LBCK;
+  
+--- 743,751 ----
+  		    RXFC_FWM_1 | priv->mcfg[MRAM_RXF1].off);
+  
+  	cccr = m_can_read(priv, M_CAN_CCCR);
+! 	cccr &= ~(CCCR_TEST | CCCR_MON | (CCCR_BRSE_MASK << CCCR_BRSE_SHIFT) |
+! 		(CCCR_FDOE_MASK << CCCR_FDOE_SHIFT));
+! 
+  	test = m_can_read(priv, M_CAN_TEST);
+  	test &= ~TEST_LBCK;
+  
+***************
+*** 886,892 ****
+  	}
+  
+  	if (priv->can.ctrlmode & CAN_CTRLMODE_FD)
+! 		cccr |= CCCR_CME_CANFD_BRS << CCCR_CME_SHIFT;
+  
+  	m_can_write(priv, M_CAN_CCCR, cccr);
+  	m_can_write(priv, M_CAN_TEST, test);
+--- 758,764 ----
+  	}
+  
+  	if (priv->can.ctrlmode & CAN_CTRLMODE_FD)
+! 		cccr |= ((CCCR_BRSE_MASK << CCCR_BRSE_SHIFT) | (CCCR_FDOE_MASK << CCCR_FDOE_SHIFT));
+  
+  	m_can_write(priv, M_CAN_CCCR, cccr);
+  	m_can_write(priv, M_CAN_TEST, test);
+***************
+*** 905,926 ****
+--- 777,808 ----
+  	m_can_set_bittiming(dev);
+  
+  	m_can_config_endisable(priv, false);
++ 	
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  }
+  
+  static void m_can_start(struct net_device *dev)
+  {
+  	struct m_can_priv *priv = netdev_priv(dev);
++ 	u32 reg_val = 0;
+  
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+  	/* basic m_can configuration */
+  	m_can_chip_config(dev);
+  
+  	priv->can.state = CAN_STATE_ERROR_ACTIVE;
+  
++     /* Enable CAN0[Bit8:7] & CAN1[Bit14:13] interrupt for MCU */
++     reg_val = ntn_reg_read(priv, 0x8028);
++     ntn_reg_write(priv, 0x8028, (reg_val & ~NTN_INTC_INTMASK2_CAN_MASK));
++ 
+  	m_can_enable_all_interrupts(priv);
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  }
+  
+  static int m_can_set_mode(struct net_device *dev, enum can_mode mode)
+  {
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+  	switch (mode) {
+  	case CAN_MODE_START:
+  		m_can_start(dev);
+***************
+*** 930,935 ****
+--- 812,818 ----
+  		return -EOPNOTSUPP;
+  	}
+  
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  	return 0;
+  }
+  
+***************
+*** 938,948 ****
+  	free_candev(dev);
+  }
+  
+! static struct net_device *alloc_m_can_dev(void)
+  {
+  	struct net_device *dev;
+  	struct m_can_priv *priv;
+  
+  	dev = alloc_candev(sizeof(*priv), 1);
+  	if (!dev)
+  		return NULL;
+--- 821,832 ----
+  	free_candev(dev);
+  }
+  
+! struct net_device *alloc_m_can_dev(void)
+  {
+  	struct net_device *dev;
+  	struct m_can_priv *priv;
+  
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+  	dev = alloc_candev(sizeof(*priv), 1);
+  	if (!dev)
+  		return NULL;
+***************
+*** 964,969 ****
+--- 848,854 ----
+  					CAN_CTRLMODE_LISTENONLY |
+  					CAN_CTRLMODE_BERR_REPORTING |
+  					CAN_CTRLMODE_FD;
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  
+  	return dev;
+  }
+***************
+*** 972,978 ****
+  {
+  	struct m_can_priv *priv = netdev_priv(dev);
+  	int err;
+! 
+  	err = clk_prepare_enable(priv->hclk);
+  	if (err)
+  		return err;
+--- 857,865 ----
+  {
+  	struct m_can_priv *priv = netdev_priv(dev);
+  	int err;
+! 	
+! 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+! #ifndef DISABLE_FOR_DEBUG
+  	err = clk_prepare_enable(priv->hclk);
+  	if (err)
+  		return err;
+***************
+*** 980,1044 ****
+  	err = clk_prepare_enable(priv->cclk);
+  	if (err)
+  		goto exit_disable_hclk;
+! 
+  	/* open the can device */
+  	err = open_candev(dev);
+  	if (err) {
+! 		netdev_err(dev, "failed to open can device\n");
+  		goto exit_disable_cclk;
+  	}
+  
+  	/* register interrupt handler */
+  	err = request_irq(dev->irq, m_can_isr, IRQF_SHARED, dev->name,
+  			  dev);
+  	if (err < 0) {
+! 		netdev_err(dev, "failed to request interrupt\n");
+  		goto exit_irq_fail;
+  	}
+  
+  	/* start the m_can controller */
+  	m_can_start(dev);
+  
+  	can_led_event(dev, CAN_LED_EVENT_OPEN);
+  	napi_enable(&priv->napi);
+  	netif_start_queue(dev);
+  
+  	return 0;
+  
+  exit_irq_fail:
+  	close_candev(dev);
+  exit_disable_cclk:
+  	clk_disable_unprepare(priv->cclk);
+  exit_disable_hclk:
+  	clk_disable_unprepare(priv->hclk);
+  	return err;
+  }
+  
+  static void m_can_stop(struct net_device *dev)
+  {
+  	struct m_can_priv *priv = netdev_priv(dev);
+! 
+  	/* disable all interrupts */
+  	m_can_disable_all_interrupts(priv);
+  
+  	clk_disable_unprepare(priv->hclk);
+  	clk_disable_unprepare(priv->cclk);
+! 
+  	/* set the state as STOPPED */
+  	priv->can.state = CAN_STATE_STOPPED;
+  }
+  
+  static int m_can_close(struct net_device *dev)
+  {
+  	struct m_can_priv *priv = netdev_priv(dev);
+  
+  	netif_stop_queue(dev);
+  	napi_disable(&priv->napi);
+  	m_can_stop(dev);
+! 	free_irq(dev->irq, dev);
+  	close_candev(dev);
+  	can_led_event(dev, CAN_LED_EVENT_STOP);
+  
+  	return 0;
+  }
+  
+--- 867,951 ----
+  	err = clk_prepare_enable(priv->cclk);
+  	if (err)
+  		goto exit_disable_hclk;
+! #endif
+  	/* open the can device */
+  	err = open_candev(dev);
+  	if (err) {
+! 		printk(KERN_ALERT "failed to open can device\n");
+! #ifndef DISABLE_FOR_DEBUG
+  		goto exit_disable_cclk;
++ #else
++ 		return err;
++ #endif
+  	}
+  
+  	/* register interrupt handler */
++   printk("TAEC_CAN: req_irq %d, isr 0x%p\n", dev->irq, (void *)m_can_isr);
+  	err = request_irq(dev->irq, m_can_isr, IRQF_SHARED, dev->name,
+  			  dev);
+  	if (err < 0) {
+! 		printk(KERN_ALERT "failed to request interrupt\n");
+  		goto exit_irq_fail;
+  	}
+  
+  	/* start the m_can controller */
+  	m_can_start(dev);
+  
++ #ifndef DISABLE_FOR_DEBUG
+  	can_led_event(dev, CAN_LED_EVENT_OPEN);
++ #endif
+  	napi_enable(&priv->napi);
+  	netif_start_queue(dev);
+  
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  	return 0;
+  
+  exit_irq_fail:
+  	close_candev(dev);
++ #ifndef DISABLE_FOR_DEBUG
+  exit_disable_cclk:
+  	clk_disable_unprepare(priv->cclk);
+  exit_disable_hclk:
+  	clk_disable_unprepare(priv->hclk);
++ #endif
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  	return err;
+  }
+  
+  static void m_can_stop(struct net_device *dev)
+  {
+  	struct m_can_priv *priv = netdev_priv(dev);
+! 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+! #ifndef DISABLE_FOR_DEBUG
+  	/* disable all interrupts */
+  	m_can_disable_all_interrupts(priv);
+  
+  	clk_disable_unprepare(priv->hclk);
+  	clk_disable_unprepare(priv->cclk);
+! #endif
+  	/* set the state as STOPPED */
+  	priv->can.state = CAN_STATE_STOPPED;
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  }
+  
+  static int m_can_close(struct net_device *dev)
+  {
+  	struct m_can_priv *priv = netdev_priv(dev);
+  
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+  	netif_stop_queue(dev);
+  	napi_disable(&priv->napi);
+  	m_can_stop(dev);
+!   if (dev->irq ) {
+!     printk("TAEC_CAN: free irq: %d\n", dev->irq);
+! 	  free_irq(dev->irq, dev);
+!   }
+  	close_candev(dev);
++ #ifndef DISABLE_FOR_DEBUG
+  	can_led_event(dev, CAN_LED_EVENT_STOP);
++ #endif
+  
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  	return 0;
+  }
+  
+***************
+*** 1047,1109 ****
+  {
+  	struct m_can_priv *priv = netdev_priv(dev);
+  	struct canfd_frame *cf = (struct canfd_frame *)skb->data;
+! 	u32 id, cccr;
+  	int i;
+  
+  	if (can_dropped_invalid_skb(dev, skb))
+  		return NETDEV_TX_OK;
+  
+  	netif_stop_queue(dev);
+  
+  	if (cf->can_id & CAN_EFF_FLAG) {
+! 		id = cf->can_id & CAN_EFF_MASK;
+! 		id |= TX_BUF_XTD;
+! 	} else {
+! 		id = ((cf->can_id & CAN_SFF_MASK) << 18);
+  	}
+  
+  	if (cf->can_id & CAN_RTR_FLAG)
+! 		id |= TX_BUF_RTR;
+! 
+! 	/* message ram configuration */
+! 	m_can_fifo_write(priv, 0, M_CAN_FIFO_ID, id);
+! 	m_can_fifo_write(priv, 0, M_CAN_FIFO_DLC, can_len2dlc(cf->len) << 16);
+! 
+! 	for (i = 0; i < cf->len; i += 4)
+! 		m_can_fifo_write(priv, 0, M_CAN_FIFO_DATA(i / 4),
+! 				 *(u32 *)(cf->data + i));
+  
+  	can_put_echo_skb(skb, dev, 0);
+  
+! 	if (priv->can.ctrlmode & CAN_CTRLMODE_FD) {
+! 		cccr = m_can_read(priv, M_CAN_CCCR);
+! 		cccr &= ~(CCCR_CMR_MASK << CCCR_CMR_SHIFT);
+! 		if (can_is_canfd_skb(skb)) {
+! 			if (cf->flags & CANFD_BRS)
+! 				cccr |= CCCR_CMR_CANFD_BRS << CCCR_CMR_SHIFT;
+! 			else
+! 				cccr |= CCCR_CMR_CANFD << CCCR_CMR_SHIFT;
+! 		} else {
+! 			cccr |= CCCR_CMR_CAN << CCCR_CMR_SHIFT;
+  		}
+  		m_can_write(priv, M_CAN_CCCR, cccr);
+  	}
+  
+  	/* enable first TX buffer to start transfer  */
+  	m_can_write(priv, M_CAN_TXBTIE, 0x1);
+  	m_can_write(priv, M_CAN_TXBAR, 0x1);
+  
+  	return NETDEV_TX_OK;
+  }
+  
+  static const struct net_device_ops m_can_netdev_ops = {
+  	.ndo_open = m_can_open,
+  	.ndo_stop = m_can_close,
+  	.ndo_start_xmit = m_can_start_xmit,
+  	.ndo_change_mtu = can_change_mtu,
+  };
+  
+! static int register_m_can_dev(struct net_device *dev)
+  {
+  	dev->flags |= IFF_ECHO;	/* we support local echo */
+  	dev->netdev_ops = &m_can_netdev_ops;
+--- 954,1214 ----
+  {
+  	struct m_can_priv *priv = netdev_priv(dev);
+  	struct canfd_frame *cf = (struct canfd_frame *)skb->data;
+! 	u32 E0 = 0, E1 = 0, cccr;
+  	int i;
+  
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
+  	if (can_dropped_invalid_skb(dev, skb))
+  		return NETDEV_TX_OK;
+  
+  	netif_stop_queue(dev);
+  
++ 	/* CAN Extented Frame */
+  	if (cf->can_id & CAN_EFF_FLAG) {
+! 		E0 = cf->can_id & CAN_EFF_MASK;
+! 		E0 |= TX_BUF_XTD;
+! 	} else { /* CAN Standard Frame */
+! 		E0 = ((cf->can_id & CAN_SFF_MASK) << 18);
+  	}
+  
++ 	/* CAN Remote Request frame */
+  	if (cf->can_id & CAN_RTR_FLAG)
+! 		E0 |= TX_BUF_RTR;
+  
+  	can_put_echo_skb(skb, dev, 0);
+  
+!     	if (priv->can.ctrlmode & CAN_CTRLMODE_FD) {
+!                 cccr = m_can_read(priv, M_CAN_CCCR);
+!                 cccr &= ~(CCCR_BRSE_MASK << CCCR_BRSE_SHIFT);
+!                 cccr &= ~(CCCR_FDOE_MASK << CCCR_FDOE_SHIFT);
+! 		/* If requested frame is CAN FD */
+!         if (can_is_canfd_skb(skb)) {
+!                         cccr |= CCCR_FDOE_MASK << CCCR_FDOE_SHIFT;
+! 			E1 |= (1 << 21);
+! 			/* BRS is evaluated only when FDOE=1 */
+!             if (cf->flags & CANFD_BRS) {
+!                         cccr |= CCCR_BRSE_MASK << CCCR_BRSE_SHIFT;
+! 				E1 |= (1 << 20);
+! 			}
+! 			/* If requested frame has ESI bit set*/
+! 			if (cf->flags & CANFD_ESI) {
+! 				E0 |= TX_BUF_ESI;	
+!         }
+  		}
+  		m_can_write(priv, M_CAN_CCCR, cccr);
+  	}
+  
++ 	/* Update Data Length Code */
++ 	E1 |= can_len2dlc(cf->len) << 16;
++ 	m_can_fifo_write(priv, 0, M_CAN_FIFO_ID, E0);
++ 	m_can_fifo_write(priv, 0, M_CAN_FIFO_DLC, E1);
++ 
++ 	/* Write Data to TX fifo */
++ 	for (i = 0; i < cf->len; i += 4)
++ 		m_can_fifo_write(priv, 0, M_CAN_FIFO_DATA(i / 4),
++ 				 *(u32 *)(cf->data + i));
++ 
+  	/* enable first TX buffer to start transfer  */
+  	m_can_write(priv, M_CAN_TXBTIE, 0x1);
+  	m_can_write(priv, M_CAN_TXBAR, 0x1);
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
+  
+  	return NETDEV_TX_OK;
+  }
+  
++ static int m_can_gfilter_config(struct m_can_priv *priv, ifr_gfilter_data *gfilt)
++ {
++ 	u32 gfc_reg = 0;
++ 
++ 	if ((gfilt->ANFS >= INVALID_NON_MATCH) || (gfilt->ANFE >= INVALID_NON_MATCH)) {
++ 		return -1;
++ 	}
++ 
++ 	/* Configure global filter register */
++ 	gfc_reg |= (gfilt->ANFS << 4);
++ 	gfc_reg |= (gfilt->ANFE << 2);
++ 	gfc_reg |= (gfilt->RRFS << 1);
++ 	gfc_reg |= (gfilt->RRFE << 0);
++ 
++ 	m_can_write(priv, M_CAN_GFC, gfc_reg);
++ 
++ 	return 0;
++ }
++ 
++ 
++ static int m_can_stdfilter_element(struct m_can_priv *priv, 
++ 				   ifr_filter_cfg *stdfiltercfg, 
++ 				   ifr_filter_data *stdfilterele)
++ {
++ 	u32 reg_val = 0;
++ 	u32 filter_ele = 0;
++ 	u32 filter_ele_off = 0;
++ 	u8 numele = 0;
++ 	ifr_filter_data *stdfilter;
++ 
++ 
++ 	if (stdfilterele->filtertype >= INVALID_FILTER)
++ 		return -1;
++ 	if (stdfilterele->fec >= INVALID_FEC)
++ 		return -1;
++ 
++ 	/* Max 128 Standard element can be supported as per spec */
++         numele = stdfiltercfg->numelements;
++         if (numele > MAX_STD_FILTER_ELEMENT)
++                 numele = MAX_STD_FILTER_ELEMENT;
++ 
++ 
++ 	/* Filter configuration in registers */
++         reg_val |= (stdfiltercfg->numelements << 16);
++         reg_val |= (priv->mcfg[MRAM_SIDF].off & ~0x03);
++         m_can_write(priv, M_CAN_SIDFC, reg_val);
++ 
++ 	/* Filter element in message RAM */
++ 	stdfilter = stdfilterele;
++ 	if (stdfilter == NULL)
++ 		return -1;
++ 
++ 	filter_ele |= (stdfilter->filtertype << 30);
++ 	filter_ele |= (stdfilter->fec << 27);
++ 	filter_ele |= (stdfilter->filterid1 << 16);
++ 	filter_ele |= (stdfilter->filterid2 << 0);
++ 
++ 	filter_ele_off = (stdfilter->index * SIDF_ELEMENT_SIZE);
++ 
++ 	m_can_fifo_std_filter_write(priv, 0, filter_ele_off, filter_ele);
++ 
++ 	return 0;
++ }
++ 
++ 
++ static int m_can_extfilter_element(struct m_can_priv *priv, 
++ 				   ifr_filter_cfg *extfiltercfg,
++ 				   ifr_filter_data *extfilterele)
++ {
++         u32 filter_ele0 = 0;
++ 	u32 filter_ele1 = 0;
++         u32 filter_ele_off0 = 0;
++ 	u32 filter_ele_off1 = 0;
++         u32 reg_val = 0;
++ 	ifr_filter_data *extfilter;
++         u8 numele = 0;
++ 
++         if ((extfilterele->filtertype >= INVALID_FILTER) ||
++ 	    (extfilterele->index >= MAX_EXD_FILTER_ELEMENT) ||
++ 	    (extfilterele->fec >= INVALID_FEC)) {
++                 return -1;
++ 	}
++ 
++ 	/* Max 64 extended elements can be supported as per spec */
++         numele = extfiltercfg->numelements;
++         if (numele > MAX_EXD_FILTER_ELEMENT)
++                 numele = MAX_EXD_FILTER_ELEMENT;
++ 
++ 	/* Filter configuration in registers */
++         reg_val |= (extfiltercfg->numelements << 16);
++         reg_val |= (priv->mcfg[MRAM_XIDF].off & ~0x03);
++         m_can_write(priv, M_CAN_XIDFC, reg_val);
++ 
++ 	/* Filter element in message RAM */
++         extfilter = extfilterele;
++         if (extfilter == NULL)
++         	return -1;
++ 
++         filter_ele0 |= (extfilter->fec << 29);
++         filter_ele0 |= (extfilter->filterid1 << 0);
++ 
++         filter_ele1 |= (extfilter->filtertype << 30);
++         filter_ele1 |= (extfilter->filterid2 << 0);
++ 
++         filter_ele_off0 = (extfilter->index * XIDF_ELEMENT_SIZE);
++ 	filter_ele_off1 = filter_ele_off1 + CANFD_RAM_WORD_WIDTH_IN_BYTE;
++ 
++         m_can_fifo_ext_filter_write(priv, 0, filter_ele_off0, filter_ele0);
++ 	m_can_fifo_ext_filter_write(priv, 0, filter_ele_off1, filter_ele1);
++ 
++         return 0;
++ }
++ 
++ static int m_can_prv_ioctl(struct m_can_priv *priv, struct ifr_data_struct *req)
++ {
++ 	int ret = 0;
++ 	u32 value = 0;
++ 	switch (req->cmd) {
++ 	case HPM_ENABLE:
++ 		{
++                         value = m_can_read(priv, M_CAN_IE);
++ 			/* Enable or Disable High priority message interrupt */
++ 			if (req->isHPM) {
++ 				m_can_write(priv, M_CAN_IE, value | IR_HPM);
++ 			} else {
++ 				m_can_write(priv, M_CAN_IE, value & ~IR_HPM);
++ 			}
++ 		}
++ 		break;
++ 
++ 	case GLOBAL_FILTER:
++ 		{
++ 			m_can_config_endisable(priv, true);
++ 			/* Configure global filter configuration register for standard filter, extended filter, message RAM */
++ 			ret = m_can_gfilter_config(priv, req->gfilter);
++ 			m_can_config_endisable(priv, false);
++ 		}
++ 		break;
++ 	case STD_FILTER:
++ 		{
++                         m_can_config_endisable(priv, true);
++ 			/* Configure Standard filter configuration register and message RAM */
++ 			ret = m_can_stdfilter_element(priv, req->stdfiltercfg, req->stdfilterele);
++                         m_can_config_endisable(priv, false);
++ 			
++ 		}			
++ 		break;
++ 	case EXTD_FILTER:
++ 			m_can_config_endisable(priv, true);
++ 			/* Configure Extended filter configruation register and message RAM */
++                         ret = m_can_extfilter_element(priv, req->extfiltercfg, req->extfilterele);
++                         m_can_config_endisable(priv, false);	
++ 		break;
++ 	default:
++ 		ret = -1;
++ 		break;	
++ 	}
++ 
++ 	return ret;
++ }
++ 
++ static int m_can_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
++ {
++         struct m_can_priv *priv = netdev_priv(dev);
++ 	struct ifr_data_struct *req = (struct ifr_data_struct *)ifr->ifr_ifru.ifru_data;
++ 	int ret = 0;
++ 
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);	
++ 
++ 	if (!netif_running(dev)) {
++ 		return 0;		
++ 	}
++ 	switch (cmd) {
++ 	case CANFD_PRV_IOCTL:
++ 		/* Private IOCTL to configure CAN controller */
++ 		ret = m_can_prv_ioctl(priv, req);
++ 		break;
++ 	default:
++ 		ret = -1;	
++ 	}
++ 	NDBGPR_CAN("<---%s\n",__FUNCTION__);
++ 	return ret;
++ }
++ 
+  static const struct net_device_ops m_can_netdev_ops = {
+  	.ndo_open = m_can_open,
+  	.ndo_stop = m_can_close,
+  	.ndo_start_xmit = m_can_start_xmit,
+  	.ndo_change_mtu = can_change_mtu,
++ 	.ndo_do_ioctl = m_can_ioctl,
+  };
+  
+! int register_m_can_dev(struct net_device *dev)
+  {
+  	dev->flags |= IFF_ECHO;	/* we support local echo */
+  	dev->netdev_ops = &m_can_netdev_ops;
+***************
+*** 1111,1116 ****
+--- 1216,1536 ----
+  	return register_candev(dev);
+  }
+  
++ static void unregister_m_can_dev(struct net_device *dev)
++ {
++ 	unregister_candev(dev);
++ }
++ 
++ 
++ #ifdef CONFIG_CAN_NTN_M_CAN
++ static int m_can_of_parse_mram(struct platform_device *pfdev,
++ 			       struct m_can_priv *priv)
++ {
++ 	u32 out_val[MRAM_CFG_LEN] = { 0 };
++ 	int i, start, end;
++ 
++ 	/* Refer the following link for the value assignment.
++ 		http://lists.infradead.org/pipermail/linux-arm-kernel/2014-July/272178.html
++ 	*/
++ 	out_val[0] = 0; //SIDF_OFF
++ 	out_val[1] = 1;	//SIDF_NUM - as of now considered only 1 element
++ 	out_val[2] = 1;	//XIDF_NUM - as of now considered only 1 element
++ 	out_val[3] = 32; //RXF0_NUM
++ 	out_val[4] = 0; //RXF1_NUM
++ 	out_val[5] = 0; //RXB_NUM
++ 	out_val[6] = 0; //TXE_NUM
++ 	out_val[7] = 1; //TXB_NUM
++ 	
++ 	NDBGPR_CAN("-->%s\n",__FUNCTION__);
++ 	/* message ram could be shared */
++ 	priv->mcfg[MRAM_SIDF].off = out_val[0];
++ 	priv->mcfg[MRAM_SIDF].num = out_val[1];
++ 	priv->mcfg[MRAM_XIDF].off = priv->mcfg[MRAM_SIDF].off +
++ 			priv->mcfg[MRAM_SIDF].num * SIDF_ELEMENT_SIZE;
++ 	priv->mcfg[MRAM_XIDF].num = out_val[2];
++ 	priv->mcfg[MRAM_RXF0].off = priv->mcfg[MRAM_XIDF].off +
++ 			priv->mcfg[MRAM_XIDF].num * XIDF_ELEMENT_SIZE;
++ 	priv->mcfg[MRAM_RXF0].num = out_val[3] & RXFC_FS_MASK;
++ 	priv->mcfg[MRAM_RXF1].off = priv->mcfg[MRAM_RXF0].off +
++ 			priv->mcfg[MRAM_RXF0].num * RXF0_ELEMENT_SIZE;
++ 	priv->mcfg[MRAM_RXF1].num = out_val[4] & RXFC_FS_MASK;
++ 	priv->mcfg[MRAM_RXB].off = priv->mcfg[MRAM_RXF1].off +
++ 			priv->mcfg[MRAM_RXF1].num * RXF1_ELEMENT_SIZE;
++ 	priv->mcfg[MRAM_RXB].num = out_val[5];
++ 	priv->mcfg[MRAM_TXE].off = priv->mcfg[MRAM_RXB].off +
++ 			priv->mcfg[MRAM_RXB].num * RXB_ELEMENT_SIZE;
++ 	priv->mcfg[MRAM_TXE].num = out_val[6];
++ 	priv->mcfg[MRAM_TXB].off = priv->mcfg[MRAM_TXE].off +
++ 			priv->mcfg[MRAM_TXE].num * TXE_ELEMENT_SIZE;
++ 	priv->mcfg[MRAM_TXB].num = out_val[7] & TXBC_NDTB_MASK;
++ 
++ 	NDBGPR_CAN("can_mram_base %p\n sidf 0x%x %d \nxidf 0x%x %d \nrxf0 0x%x %d \nrxf1 0x%x %d \nrxb 0x%x %d \ntxe 0x%x %d \ntxb 0x%x %d\n",
++ 		priv->can_mram_base,
++ 		priv->mcfg[MRAM_SIDF].off, priv->mcfg[MRAM_SIDF].num,
++ 		priv->mcfg[MRAM_XIDF].off, priv->mcfg[MRAM_XIDF].num,
++ 		priv->mcfg[MRAM_RXF0].off, priv->mcfg[MRAM_RXF0].num,
++ 		priv->mcfg[MRAM_RXF1].off, priv->mcfg[MRAM_RXF1].num,
++ 		priv->mcfg[MRAM_RXB].off, priv->mcfg[MRAM_RXB].num,
++ 		priv->mcfg[MRAM_TXE].off, priv->mcfg[MRAM_TXE].num,
++ 		priv->mcfg[MRAM_TXB].off, priv->mcfg[MRAM_TXB].num);
++ 
++ 	/* initialize the entire Message RAM in use to avoid possible
++ 	 * ECC/parity checksum errors when reading an uninitialized buffer
++ 	 */
++ 	start = priv->mcfg[MRAM_SIDF].off;
++ 	end = priv->mcfg[MRAM_TXB].off +
++ 		priv->mcfg[MRAM_TXB].num * TXB_ELEMENT_SIZE;
++ 	for (i = start; i < end; i += 4)
++ 		WRITE32(0x0, priv->can_mram_base + i);
++ 
++ 	NDBGPR_CAN("<--%s\n",__FUNCTION__);
++ 	return 0;
++ }
++ 
++ static int m_can_plat_probe(struct platform_device *pfdev)
++ {
++   struct ntn_mfd_handle       *handle = pfdev->dev.platform_data;
++   struct ntn_mf_dev           *pmdev;
++   struct pci_dev              *pdev;
++ 	struct m_can_priv *priv;
++ #ifndef DISABLE_FOR_DEBUG
++ 	struct clk *hclk, *cclk;
++ #endif
++ 	int                          ret, i;
++ 	unsigned int                 reg_val;
++ 	unsigned long                ntn_reg_pci_base_addr;    
++ 
++ 
++ 	NDBGPR("--> ntn_pci_probe\n");
++ 
++   if (!handle) {
++     NDBGPR("--> can not get the handle!!!!!!!!\n");
++     return -ENXIO;
++   }
++ 
++   pmdev = handle->pmdev;
++   if (!pmdev){
++     NDBGPR("--> can not get the pmdev!!!!!!!!\n");
++     return -ENXIO;
++   }
++ 
++   pdev = pmdev->pci;
++ 
++ #ifndef DISABLE_FOR_DEBUG
++ 	hclk = devm_clk_get(&pdev->dev, "hclk");
++ 	cclk = devm_clk_get(&pdev->dev, "cclk");
++ 	if (IS_ERR(hclk) || IS_ERR(cclk)) {
++ 		printk(KERN_ALERT "no clock found\n");
++ 		return -ENODEV;
++ 	}
++ #endif
++ 
++ 	/* Read BAR0 and map the Neutrino register base address */
++   ntn_reg_pci_base_addr = pmdev->remap_reg_addr;    
++   printk(KERN_ALERT "BAR0 virtual address = 0x%lx\n", ntn_reg_pci_base_addr);
++    
++   if (((void __iomem *)ntn_reg_pci_base_addr == NULL) )
++   {
++   	printk(KERN_ALERT "%s: cannot map Neutrino BARs, aborting", KBUILD_MODNAME);
++     ret = -EIO;
++     return ret;
++   }
++ 
++ 	
++ 	/* allocate the m_can device for max can controllers */ 
++ 	for(i=0; i<NTN_CAN_INTERFACE_MAX; i++)
++ 	{
++ 	 	can_dev_priv.ndev[i] = NULL;
++ 		can_dev_priv.ndev[i] = alloc_m_can_dev();
++ 		if (!can_dev_priv.ndev[i]){
++ 			for(i--; i>=0; i--)
++ 				free_candev(can_dev_priv.ndev[i]);
++ 			goto err_out_can_alloc_failed;
++ 		}
++ 		priv = NULL;
++ 		priv = netdev_priv(can_dev_priv.ndev[i]);
++ 		can_dev_priv.ndev[i]->irq = pmdev->irq_can;
++ 		printk(KERN_ALERT "Allocated IRQ Number = %d\n", can_dev_priv.ndev[i]->irq); 
++ 		
++ 		/* Neutrino register base space based address equivalent to 0x4000_0000 from M3 Space*/
++ 		priv->reg_base = (void __iomem *)(ntn_reg_pci_base_addr);
++ 		priv->can_mram_base = (void __iomem *)(ntn_reg_pci_base_addr + NTN_CAN_MRAM_OFFSET[i]);
++ 		can_dev_priv.ndev[i]->base_addr = (unsigned long)priv->reg_base;
++ 		priv->can_no = i;
++ 		
++ #ifndef DISABLE_FOR_DEBUG
++ 		priv->hclk = hclk;
++ 		priv->cclk = cclk;
++ 		priv->can.clock.freq = clk_get_rate(cclk);
++ #else	
++ 		priv->can.clock.freq = 80000000;
++ #endif
++ 		ret = m_can_of_parse_mram(pfdev, priv);
++ 		if (ret){
++ 			printk(KERN_ALERT "%s: m_can_of_parse_mram Failed", KBUILD_MODNAME);
++ 			goto err_out_can_failed_free_dev;
++ 		}
++ 		priv->dev = can_dev_priv.ndev[i];
++ 	}
++ 
++ 	/* Assign PCIe private data */
++ 	platform_set_drvdata(pfdev, &can_dev_priv);
++ 
++ 	/* Register CAN devices as m-can device */
++   for(i=0; i<NTN_CAN_INTERFACE_MAX; i++) {
++ 		priv = NULL;
++ 		priv = netdev_priv(can_dev_priv.ndev[i]);
++ 
++ 		SET_NETDEV_DEV(can_dev_priv.ndev[i], &pfdev->dev);
++ 
++ 		priv->pfdev = pfdev;
++ 		
++ 		ret = register_m_can_dev(can_dev_priv.ndev[i]);
++ 		if (ret) {
++ 			printk(KERN_ALERT "registering %s failed (err=%d)\n",
++ 				KBUILD_MODNAME, ret);
++ 			for(i--; i>=0; i--)
++ 				unregister_m_can_dev(can_dev_priv.ndev[i]);
++ 			goto err_out_can_register_failed;
++ 		}
++ 	}
++ 	
++ 	/* Disable CAN interrupt for INTX */
++ 	reg_val = ntn_reg_read(priv, 0x8048);
++ 	ntn_reg_write(priv, 0x8048, (reg_val | NTN_INTC_INTMASK2_CAN_MASK));
++ 	
++ 	/* Enable CAN0[Bit8:7] & CAN1[Bit14:13] interrupt for MCU */	
++ 	reg_val = ntn_reg_read(priv, 0x8028);
++ 	ntn_reg_write(priv, 0x8028, (reg_val & ~NTN_INTC_INTMASK2_CAN_MASK));
++ 
++ #ifndef DISABLE_FOR_DEBUG
++ 	devm_can_led_init(ndev);
++ #endif
++ 	NDBGPR("%s device registered (regs=%p, irq=%d)\n",
++ 		 KBUILD_MODNAME, priv->reg_base, can_dev_priv.ndev[0]->irq);
++ 
++ 	NDBGPR("<-- ntn_pci_probe\n");
++ 
++ 	return 0;
++     
++ err_out_can_register_failed:
++ 	platform_set_drvdata(pfdev, NULL);
++ 
++ err_out_can_failed_free_dev:
++ 	for(i=0; i<NTN_CAN_INTERFACE_MAX; i++) {
++ 		free_candev(can_dev_priv.ndev[i]);
++ 	}
++ 	
++ err_out_can_alloc_failed:
++ 
++ 	return ret;
++ }
++ 
++ static __maybe_unused int m_can_suspend(struct device *dev)
++ {
++ 	struct net_device *ndev = dev_get_drvdata(dev);
++ 	struct m_can_priv *priv = netdev_priv(ndev);
++ 
++ 	if (netif_running(ndev)) {
++ 		netif_stop_queue(ndev);
++ 		netif_device_detach(ndev);
++ 	}
++ 
++ 	/* TODO: enter low power */
++ 
++ 	priv->can.state = CAN_STATE_SLEEPING;
++ 
++ 	return 0;
++ }
++ 
++ static __maybe_unused int m_can_resume(struct device *dev)
++ {
++ 	struct net_device *ndev = dev_get_drvdata(dev);
++ 	struct m_can_priv *priv = netdev_priv(ndev);
++ 
++ 	/* TODO: exit low power */
++ 
++ 	priv->can.state = CAN_STATE_ERROR_ACTIVE;
++ 
++ 	if (netif_running(ndev)) {
++ 		netif_device_attach(ndev);
++ 		netif_start_queue(ndev);
++ 	}
++ 
++ 	return 0;
++ }
++ 
++ 
++ 
++ static int m_can_plat_remove(struct platform_device *pfdev)
++ {
++   struct ntn_mfd_handle   *handle = pfdev->dev.platform_data;
++ 	struct dev_priv 		    *p_dev_priv = platform_get_drvdata(pfdev);
++ 	struct m_can_priv       *priv = netdev_priv(p_dev_priv->ndev[0]);
++   struct ntn_mf_dev       *pmdev;
++ 	unsigned int             reg_val;
++ 	int                      i;
++ 	
++ 	NDBGPR("--> ntn_pci_remove\n");
++ 
++   if (!handle) {
++   	NDBGPR("--> can not get the handle!!!!!!!!\n");
++   	return -ENXIO;
++   }
++   
++   pmdev = handle->pmdev;
++   if (!pmdev){
++   	NDBGPR("--> can not get the pmdev !!!!!!!!\n");
++   	return -ENXIO;
++   }
++ 	
++ 	/* Disable CAN0[Bit8:7] & CAN1[Bit14:13] interrupt for MCU */	
++ 	reg_val = ntn_reg_read(priv, 0x8028);
++ 	ntn_reg_write(priv, 0x8028, (reg_val | NTN_INTC_INTMASK2_CAN_MASK));
++ 
++ 	/* Unregister m-can devices */	
++ 	for(i=0; i<NTN_CAN_INTERFACE_MAX; i++)
++ 	{
++ 		unregister_m_can_dev(p_dev_priv->ndev[i]);
++ 		free_m_can_dev(p_dev_priv->ndev[i]);
++ 	}
++ 	
++ 	platform_set_drvdata(pfdev, NULL);
++ 
++ 	NDBGPR("<-- ntn_pci_remove\n");
++ 	
++ 	return 0;
++ }
++ 
++ 
++ static const struct dev_pm_ops m_can_pmops = {
++ 	SET_SYSTEM_SLEEP_PM_OPS(m_can_suspend, m_can_resume)
++ };
++ 
++ static struct platform_device_id ntn_pcie_can_ids[] = {
++   {
++     .name = DRV_NAME_NTN_PCI_CAN,
++   },
++   {
++   }
++ };
++ 
++ static struct platform_driver NTN_can_driver = {
++ 	.id_table = ntn_pcie_can_ids,
++ 	.driver = {
++ 		.name = KBUILD_MODNAME,
++ 		.pm     = &m_can_pmops,
++ 	},
++ 	.probe = m_can_plat_probe,
++ 	.remove = m_can_plat_remove,
++ };
++ 
++ module_platform_driver(NTN_can_driver);
++ 
++ MODULE_AUTHOR("Toshiba America Electronic Component");
++ MODULE_DESCRIPTION("Neutrino CAN Driver");
++ MODULE_LICENSE("GPL v2");
++ #else
+  static int m_can_of_parse_mram(struct platform_device *pdev,
+  			       struct m_can_priv *priv)
+  {
+***************
+*** 1137,1143 ****
+  		return -ENODEV;
+  	}
+  
+! 	priv->mram_base = addr;
+  	priv->mcfg[MRAM_SIDF].off = out_val[0];
+  	priv->mcfg[MRAM_SIDF].num = out_val[1];
+  	priv->mcfg[MRAM_XIDF].off = priv->mcfg[MRAM_SIDF].off +
+--- 1557,1563 ----
+  		return -ENODEV;
+  	}
+  
+! 	priv->can_mram_base = addr;
+  	priv->mcfg[MRAM_SIDF].off = out_val[0];
+  	priv->mcfg[MRAM_SIDF].num = out_val[1];
+  	priv->mcfg[MRAM_XIDF].off = priv->mcfg[MRAM_SIDF].off +
+***************
+*** 1159,1166 ****
+  			priv->mcfg[MRAM_TXE].num * TXE_ELEMENT_SIZE;
+  	priv->mcfg[MRAM_TXB].num = out_val[7] & TXBC_NDTB_MASK;
+  
+! 	dev_dbg(&pdev->dev, "mram_base %p sidf 0x%x %d xidf 0x%x %d rxf0 0x%x %d rxf1 0x%x %d rxb 0x%x %d txe 0x%x %d txb 0x%x %d\n",
+! 		priv->mram_base,
+  		priv->mcfg[MRAM_SIDF].off, priv->mcfg[MRAM_SIDF].num,
+  		priv->mcfg[MRAM_XIDF].off, priv->mcfg[MRAM_XIDF].num,
+  		priv->mcfg[MRAM_RXF0].off, priv->mcfg[MRAM_RXF0].num,
+--- 1579,1586 ----
+  			priv->mcfg[MRAM_TXE].num * TXE_ELEMENT_SIZE;
+  	priv->mcfg[MRAM_TXB].num = out_val[7] & TXBC_NDTB_MASK;
+  
+! 	dev_dbg(&pdev->dev, "can_mram_base %p sidf 0x%x %d xidf 0x%x %d rxf0 0x%x %d rxf1 0x%x %d rxb 0x%x %d txe 0x%x %d txb 0x%x %d\n",
+! 		priv->can_mram_base,
+  		priv->mcfg[MRAM_SIDF].off, priv->mcfg[MRAM_SIDF].num,
+  		priv->mcfg[MRAM_XIDF].off, priv->mcfg[MRAM_XIDF].num,
+  		priv->mcfg[MRAM_RXF0].off, priv->mcfg[MRAM_RXF0].num,
+***************
+*** 1176,1182 ****
+  	end = priv->mcfg[MRAM_TXB].off +
+  		priv->mcfg[MRAM_TXB].num * TXB_ELEMENT_SIZE;
+  	for (i = start; i < end; i += 4)
+! 		writel(0x0, priv->mram_base + i);
+  
+  	return 0;
+  }
+--- 1596,1602 ----
+  	end = priv->mcfg[MRAM_TXB].off +
+  		priv->mcfg[MRAM_TXB].num * TXB_ELEMENT_SIZE;
+  	for (i = start; i < end; i += 4)
+! 		writel(0x0, priv->can_mram_base + i);
+  
+  	return 0;
+  }
+***************
+*** 1210,1216 ****
+  
+  	priv = netdev_priv(dev);
+  	dev->irq = irq;
+! 	priv->base = addr;
+  	priv->device = &pdev->dev;
+  	priv->hclk = hclk;
+  	priv->cclk = cclk;
+--- 1630,1636 ----
+  
+  	priv = netdev_priv(dev);
+  	dev->irq = irq;
+! 	priv->reg_base = addr;
+  	priv->device = &pdev->dev;
+  	priv->hclk = hclk;
+  	priv->cclk = cclk;
+***************
+*** 1233,1239 ****
+  	devm_can_led_init(dev);
+  
+  	dev_info(&pdev->dev, "%s device registered (regs=%p, irq=%d)\n",
+! 		 KBUILD_MODNAME, priv->base, dev->irq);
+  
+  	return 0;
+  
+--- 1653,1659 ----
+  	devm_can_led_init(dev);
+  
+  	dev_info(&pdev->dev, "%s device registered (regs=%p, irq=%d)\n",
+! 		 KBUILD_MODNAME, priv->reg_base, dev->irq);
+  
+  	return 0;
+  
+***************
+*** 1276,1286 ****
+  	return 0;
+  }
+  
+- static void unregister_m_can_dev(struct net_device *dev)
+- {
+- 	unregister_candev(dev);
+- }
+- 
+  static int m_can_plat_remove(struct platform_device *pdev)
+  {
+  	struct net_device *dev = platform_get_drvdata(pdev);
+--- 1696,1701 ----
+***************
+*** 1318,1320 ****
+--- 1733,1736 ----
+  MODULE_AUTHOR("Dong Aisheng <b29396@freescale.com>");
+  MODULE_LICENSE("GPL v2");
+  MODULE_DESCRIPTION("CAN bus driver for Bosch M_CAN controller");
++ #endif /* !CONFIG_CAN_NTN_M_CAN */
+diff -crB --new-file linux-3.19.8-100.fc20.x86_64/drivers/net/can/m_can/m_can.h linux-3.19.8-100.fc20.x86_64_ntn/drivers/net/can/m_can/m_can.h
+*** linux-3.19.8-100.fc20.x86_64/drivers/net/can/m_can/m_can.h	1969-12-31 20:00:00.000000000 -0400
+--- linux-3.19.8-100.fc20.x86_64_ntn/drivers/net/can/m_can/m_can.h	2016-06-27 11:39:36.567277139 -0400
+***************
+*** 0 ****
+--- 1,368 ----
++ /*
++  * CAN bus driver for Bosch M_CAN controller
++  *
++  * Copyright (C) 2014 Freescale Semiconductor, Inc.
++  *	Dong Aisheng <b29396@freescale.com>
++  *
++  * Bosch M_CAN user manual can be obtained from:
++  * http://www.bosch-semiconductors.de/media/pdf_1/ipmodules_1/m_can/
++  * mcan_users_manual_v302.pdf
++  *
++  * This file is licensed under the terms of the GNU General Public
++  * License version 2. This program is licensed "as is" without any
++  * warranty of any kind, whether express or implied.
++  */
++ 
++ #ifndef __CAN_DRV_H__
++ #define __CAN_DRV_H__
++ 
++ 
++ #include <linux/clk.h>
++ #include <linux/delay.h>
++ #include <linux/interrupt.h>
++ #include <linux/io.h>
++ #include <linux/kernel.h>
++ #include <linux/module.h>
++ #include <linux/netdevice.h>
++ #include <linux/of.h>
++ #include <linux/of_device.h>
++ #include <linux/platform_device.h>
++ #include <linux/can/dev.h>
++ #include <linux/device.h>
++ 
++ #ifdef CONFIG_CAN_NTN_M_CAN
++ 
++ #define READ32 ioread32
++ #define WRITE32 iowrite32
++ 
++ #define NTN_INTC_INTMASK2_CAN0_MASK (0x00000180)
++ #define NTN_INTC_INTMASK2_CAN1_MASK (0x00006000)
++ #define NTN_INTC_INTMASK2_CAN_MASK  (NTN_INTC_INTMASK2_CAN0_MASK | NTN_INTC_INTMASK2_CAN1_MASK)
++ 
++ #define NTN_INTC_INTMASK1_ETH_MASK 	(0x003FFF00)
++ #define NTN_INTC_INTMASK1_TDM_MASK 	(0x1FC00000)
++ 
++ #define NTN_CAN_INTERFACE_MAX 2
++ extern unsigned long NTN_CAN_REG_OFFSET[NTN_CAN_INTERFACE_MAX];
++ extern unsigned long NTN_CAN_MRAM_OFFSET[NTN_CAN_INTERFACE_MAX];
++ 
++ #define DISABLE_FOR_DEBUG
++ 
++ /* Debug related */
++ //#define NTN_DEBUG
++ //#define NTN_DEBUG_CAN
++ //#define NTN_DEBUG_REG
++ //#define NTN_DEBUG_FIFO
++ 
++ #else /* CONFIG_CAN_NTN_M_CAN */
++ 
++ #define READ32 readl
++ #define WRITE32 writel
++ #endif /* !CONFIG_CAN_NTN_M_CAN */
++ 
++ #ifdef NTN_DEBUG
++ #define NDBGPR(x...) printk(KERN_DEBUG x)
++ #else
++ #define NDBGPR(x...) do { } while (0)
++ #endif
++ 
++ #ifdef NTN_DEBUG_CAN
++ #define NDBGPR_CAN(x...) printk(KERN_DEBUG x)
++ #else
++ #define NDBGPR_CAN(x...) do { } while (0)
++ #endif
++ 
++ #ifdef NTN_DEBUG_REG
++ #define NDBGPR_REG(x...) printk(KERN_DEBUG x)
++ #else
++ #define NDBGPR_REG(x...) do { } while (0)
++ #endif
++ 
++ #ifdef NTN_DEBUG_FIFO
++ #define NDBGPR_FIFO(x...) printk(KERN_DEBUG x)
++ #else
++ #define NDBGPR_FIFO(x...) do { } while (0)
++ #endif
++ 
++ /* napi related */
++ #define M_CAN_NAPI_WEIGHT	64
++ 
++ /* message ram configuration data length */
++ #define MRAM_CFG_LEN	8
++ 
++ /* Private IOCTL for handling device specific task */
++ #define CANFD_PRV_IOCTL   SIOCDEVPRIVATE
++ 
++ 
++ /* registers definition */
++ enum m_can_reg {
++ 	M_CAN_CREL	= 0x0,
++ 	M_CAN_ENDN	= 0x4,
++ 	M_CAN_CUST	= 0x8,
++ 	M_CAN_FBTP	= 0xc,
++ 	M_CAN_TEST	= 0x10,
++ 	M_CAN_RWD	= 0x14,
++ 	M_CAN_CCCR	= 0x18,
++ 	M_CAN_BTP	= 0x1c,
++ 	M_CAN_TSCC	= 0x20,
++ 	M_CAN_TSCV	= 0x24,
++ 	M_CAN_TOCC	= 0x28,
++ 	M_CAN_TOCV	= 0x2c,
++ 	M_CAN_ECR	= 0x40,
++ 	M_CAN_PSR	= 0x44,
++ 	M_CAN_TDCR	= 0x48,
++ 	M_CAN_IR	= 0x50,
++ 	M_CAN_IE	= 0x54,
++ 	M_CAN_ILS	= 0x58,
++ 	M_CAN_ILE	= 0x5c,
++ 	M_CAN_GFC	= 0x80,
++ 	M_CAN_SIDFC	= 0x84,
++ 	M_CAN_XIDFC	= 0x88,
++ 	M_CAN_XIDAM	= 0x90,
++ 	M_CAN_HPMS	= 0x94,
++ 	M_CAN_NDAT1	= 0x98,
++ 	M_CAN_NDAT2	= 0x9c,
++ 	M_CAN_RXF0C	= 0xa0,
++ 	M_CAN_RXF0S	= 0xa4,
++ 	M_CAN_RXF0A	= 0xa8,
++ 	M_CAN_RXBC	= 0xac,
++ 	M_CAN_RXF1C	= 0xb0,
++ 	M_CAN_RXF1S	= 0xb4,
++ 	M_CAN_RXF1A	= 0xb8,
++ 	M_CAN_RXESC	= 0xbc,
++ 	M_CAN_TXBC	= 0xc0,
++ 	M_CAN_TXFQS	= 0xc4,
++ 	M_CAN_TXESC	= 0xc8,
++ 	M_CAN_TXBRP	= 0xcc,
++ 	M_CAN_TXBAR	= 0xd0,
++ 	M_CAN_TXBCR	= 0xd4,
++ 	M_CAN_TXBTO	= 0xd8,
++ 	M_CAN_TXBCF	= 0xdc,
++ 	M_CAN_TXBTIE	= 0xe0,
++ 	M_CAN_TXBCIE	= 0xe4,
++ 	M_CAN_TXEFC	= 0xf0,
++ 	M_CAN_TXEFS	= 0xf4,
++ 	M_CAN_TXEFA	= 0xf8,
++ };
++ 
++ /* m_can lec values */
++ enum m_can_lec_type {
++ 	LEC_NO_ERROR = 0,
++ 	LEC_STUFF_ERROR,
++ 	LEC_FORM_ERROR,
++ 	LEC_ACK_ERROR,
++ 	LEC_BIT1_ERROR,
++ 	LEC_BIT0_ERROR,
++ 	LEC_CRC_ERROR,
++ 	LEC_UNUSED,
++ };
++ 
++ enum m_can_mram_cfg {
++ 	MRAM_SIDF = 0,
++ 	MRAM_XIDF,
++ 	MRAM_RXF0,
++ 	MRAM_RXF1,
++ 	MRAM_RXB,
++ 	MRAM_TXE,
++ 	MRAM_TXB,
++ 	MRAM_CFG_NUM,
++ };
++ 
++ /* Fast Bit Timing & Prescaler Register (FBTP) */
++ #define FBTR_FBRP_MASK		0x1f
++ #define FBTR_FBRP_SHIFT		16
++ #define FBTR_FTSEG1_SHIFT	8
++ #define FBTR_FTSEG1_MASK	(0x1F << FBTR_FTSEG1_SHIFT)
++ #define FBTR_FTSEG2_SHIFT	4
++ #define FBTR_FTSEG2_MASK	(0xF << FBTR_FTSEG2_SHIFT)
++ #define FBTR_FSJW_SHIFT		0
++ #define FBTR_FSJW_MASK		0xF
++ 
++ /* Test Register (TEST) */
++ #define TEST_LBCK	BIT(4)
++ 
++ /* CC Control Register(CCCR) */
++ #define CCCR_BRSE_SHIFT		0x9
++ #define CCCR_BRSE_MASK		0x1	
++ #define CCCR_FDOE_SHIFT		0x8
++ #define CCCR_FDOE_MASK		0x1
++ #define CCCR_TEST		BIT(7)
++ #define CCCR_MON		BIT(5)
++ #define CCCR_CCE		BIT(1)
++ #define CCCR_INIT		BIT(0)
++ #define CCCR_CANFD		0x10
++ 
++ /* Bit Timing & Prescaler Register (BTP) */
++ #define BTR_SJW_SHIFT		25
++ #define BTR_SJW_MASK		0x7f
++ #define BTR_BRP_MASK		0x1ff
++ #define BTR_BRP_SHIFT		16
++ #define BTR_TSEG1_SHIFT		8
++ #define BTR_TSEG1_MASK		(0xff << BTR_TSEG1_SHIFT)
++ #define BTR_TSEG2_SHIFT		0
++ #define BTR_TSEG2_MASK		(0x7f << BTR_TSEG2_SHIFT)
++ 
++ /* Error Counter Register(ECR) */
++ #define ECR_RP			BIT(15)
++ #define ECR_REC_SHIFT		8
++ #define ECR_REC_MASK		(0x7f << ECR_REC_SHIFT)
++ #define ECR_TEC_SHIFT		0
++ #define ECR_TEC_MASK		0xff
++ 
++ /* Protocol Status Register(PSR) */
++ #define PSR_BO		BIT(7)
++ #define PSR_EW		BIT(6)
++ #define PSR_EP		BIT(5)
++ #define PSR_LEC_MASK	0x7
++ 
++ /* Interrupt Register(IR) */
++ #define IR_ALL_INT	0xffffffff
++ #define IR_STE		BIT(31)
++ #define IR_FOE		BIT(30)
++ #define IR_ACKE		BIT(29)
++ #define IR_BE		BIT(28)
++ #define IR_CRCE		BIT(27)
++ #define IR_WDI		BIT(26)
++ #define IR_BO		BIT(25)
++ #define IR_EW		BIT(24)
++ #define IR_EP		BIT(23)
++ #define IR_ELO		BIT(22)
++ #define IR_BEU		BIT(21)
++ #define IR_BEC		BIT(20)
++ #define IR_DRX		BIT(19)
++ #define IR_TOO		BIT(18)
++ #define IR_MRAF		BIT(17)
++ #define IR_TSW		BIT(16)
++ #define IR_TEFL		BIT(15)
++ #define IR_TEFF		BIT(14)
++ #define IR_TEFW		BIT(13)
++ #define IR_TEFN		BIT(12)
++ #define IR_TFE		BIT(11)
++ #define IR_TCF		BIT(10)
++ #define IR_TC		BIT(9)
++ #define IR_HPM		BIT(8)
++ #define IR_RF1L		BIT(7)
++ #define IR_RF1F		BIT(6)
++ #define IR_RF1W		BIT(5)
++ #define IR_RF1N		BIT(4)
++ #define IR_RF0L		BIT(3)
++ #define IR_RF0F		BIT(2)
++ #define IR_RF0W		BIT(1)
++ #define IR_RF0N		BIT(0)
++ #define IR_ERR_STATE	(IR_BO | IR_EW | IR_EP)
++ #define IR_ERR_LEC	(IR_STE	| IR_FOE | IR_ACKE | IR_BE | IR_CRCE)
++ #define IR_ERR_BUS	(IR_ERR_LEC | IR_WDI | IR_ELO | IR_BEU | \
++ 			 IR_BEC | IR_TOO | IR_MRAF | IR_TSW | IR_TEFL | \
++ 			 IR_RF1L | IR_RF0L)
++ #define IR_ERR_ALL	(IR_ERR_STATE | IR_ERR_BUS)
++ 
++ /* Interrupt Line Select (ILS) */
++ #define ILS_ALL_INT0	0x0
++ #define ILS_ALL_INT1	0xFFFFFFFF
++ 
++ /* Interrupt Line Enable (ILE) */
++ #define ILE_EINT0	BIT(0)
++ #define ILE_EINT1	BIT(1)
++ 
++ /* Rx FIFO 0/1 Configuration (RXF0C/RXF1C) */
++ #define RXFC_FWM_OFF	24
++ #define RXFC_FWM_MASK	0x7f
++ #define RXFC_FWM_1	(1 << RXFC_FWM_OFF)
++ #define RXFC_FS_OFF	16
++ #define RXFC_FS_MASK	0x7f
++ 
++ /* Rx FIFO 0/1 Status (RXF0S/RXF1S) */
++ #define RXFS_RFL	BIT(25)
++ #define RXFS_FF		BIT(24)
++ #define RXFS_FPI_OFF	16
++ #define RXFS_FPI_MASK	0x3f0000
++ #define RXFS_FGI_OFF	8
++ #define RXFS_FGI_MASK	0x3f00
++ #define RXFS_FFL_MASK	0x7f
++ 
++ /* Rx Buffer / FIFO Element Size Configuration (RXESC) */
++ #define M_CAN_RXESC_8BYTES	0x0
++ #define M_CAN_RXESC_64BYTES	0x777
++ 
++ /* Tx Buffer Configuration(TXBC) */
++ #define TXBC_NDTB_OFF		16
++ #define TXBC_NDTB_MASK		0x3f
++ 
++ /* Tx Buffer Element Size Configuration(TXESC) */
++ #define TXESC_TBDS_8BYTES	0x0
++ #define TXESC_TBDS_64BYTES	0x7
++ 
++ /* Tx Event FIFO Con.guration (TXEFC) */
++ #define TXEFC_EFS_OFF		16
++ #define TXEFC_EFS_MASK		0x3f
++ 
++ /* Message RAM Configuration (in bytes) */
++ #define SIDF_ELEMENT_SIZE	4
++ #define XIDF_ELEMENT_SIZE	8
++ #define RXF0_ELEMENT_SIZE	72
++ #define RXF1_ELEMENT_SIZE	72
++ #define RXB_ELEMENT_SIZE	16
++ #define TXE_ELEMENT_SIZE	8
++ #define TXB_ELEMENT_SIZE	72
++ 
++ /* Message RAM Element */	
++ #define M_CAN_FIFO_ID		0x0
++ #define M_CAN_FIFO_DLC		0x4
++ #define M_CAN_FIFO_DATA(n)	(0x8 + ((n) << 2))
++ #define CANFD_RAM_WORD_WIDTH_IN_BYTE 0x4
++ 
++ /* Rx Buffer Element */
++ /* R0 */
++ #define RX_BUF_ESI		BIT(31)
++ #define RX_BUF_XTD		BIT(30)
++ #define RX_BUF_RTR		BIT(29)
++ /* R1 */
++ #define RX_BUF_ANMF		BIT(31)
++ #define RX_BUF_EDL		BIT(21)
++ #define RX_BUF_BRS		BIT(20)
++ 
++ /* Tx Buffer Element */
++ /* R0 */
++ #define TX_BUF_ESI		BIT(31)
++ #define TX_BUF_XTD		BIT(30)
++ #define TX_BUF_RTR		BIT(29)
++ 
++ #ifdef CONFIG_CAN_NTN_M_CAN
++ /**
++  * to maintain pcie private sturcture, here CAN Network device structure
++  * is a private to PCIe
++  */
++ struct dev_priv {
++     struct net_device *ndev[NTN_CAN_INTERFACE_MAX];
++ };
++ #endif /* CONFIG_CAN_NTN_M_CAN */
++ 
++ /* address offset and element number for each FIFO/Buffer in the Message RAM */
++ struct mram_cfg {
++ 	u16 off;
++ 	u8  num;
++ };
++ 
++ /* m_can private data structure */
++ struct m_can_priv {
++ 	struct can_priv can;	/* must be the first member */
++ 	struct napi_struct napi;
++ 	struct net_device *dev;
++ #ifdef CONFIG_CAN_NTN_M_CAN
++ 	struct pci_dev *pdev;
++ 	struct platform_device *pfdev;
++ #else
++ 	struct device *device;
++ #endif
++ 	struct clk *hclk;
++ 	struct clk *cclk;
++ 	void __iomem *reg_base;
++ 	u32 irqstatus;
++     u32 can_no;
++ 	
++ 	/* message ram configuration */
++ 	void __iomem *can_mram_base;
++ 	struct mram_cfg mcfg[MRAM_CFG_NUM];
++ };
++ 
++ #endif
+diff -crB --new-file linux-3.19.8-100.fc20.x86_64/drivers/net/can/m_can/neutrino_pcie_drv.h linux-3.19.8-100.fc20.x86_64_ntn/drivers/net/can/m_can/neutrino_pcie_drv.h
+*** linux-3.19.8-100.fc20.x86_64/drivers/net/can/m_can/neutrino_pcie_drv.h	1969-12-31 20:00:00.000000000 -0400
+--- linux-3.19.8-100.fc20.x86_64_ntn/drivers/net/can/m_can/neutrino_pcie_drv.h	2016-06-27 11:39:36.567277139 -0400
+***************
+*** 0 ****
+--- 1,89 ----
++ /* ============================================================================
++  *   COPYRIGHT © 2015
++  *
++  *   Toshiba America Electronic Components
++  *
++  *   ALL RIGHTS RESERVED.
++  *   UNPUBLISHED – PROTECTED UNDER COPYRIGHT LAWS.  USE OF A COPYRIGHT NOTICE
++  *   IS PRECAUTIONARY ONLY AND DOES NOT IMPLY PUBLICATION OR DISCLOSURE.
++  *
++  *   THIS SOFTWARE CONTAINS CONFIDENTIAL INFORMATION AND TRADE SECRETS OF
++  *   TOSHIBA. USE, DISCLOSURE, OR REPRODUCTION IS PROHIBITED WITHOUT THE
++  *   PRIOR EXPRESS WRITTEN PERMISSION OF TOSHIBA.
++  *
++  *   PROJECT:   NEUTRINO
++  *
++  *   VERSION:   Revision: 1.0
++  *
++  *   RELEASE:   Preliminary & Confidential
++  *   @date      25 September 2015
++  *
++  *   EXAMPLE PROGRAMS ARE PROVIDED AS-IS WITH NO WARRANTY OF ANY KIND, 
++  *   EITHER EXPRESS OR IMPLIED.
++  *
++  *   TOSHIBA ASSUMES NO LIABILITY FOR CUSTOMERS' PRODUCT DESIGN OR APPLICATIONS.
++  *   
++  *   THIS SOFTWARE IS PROVIDED AS-IS AND HAS NOT BEEN FULLY TESTED.  IT IS
++  *   INTENDED FOR REFERENCE USE ONLY.
++  *   
++  *   TOSHIBA DISCLAIMS ALL EXPRESS AND IMPLIED WARRANTIES AND ALL LIABILITY OR
++  *   ANY DAMAGES ASSOCIATED WITH YOUR USE OF THIS SOFTWARE.
++  *
++  * ========================================================================= */
++ 
++ #ifndef __Neutrino_PCIe__PCI_H__
++ #define __Neutrino_PCIe__PCI_H__
++ 
++ /**************************** Neutrino Defines Starts Here ***************************/
++ 
++ #define NTN_MAX_MSI         (1)
++ 
++ //Neutrino Debugging
++ #define NTN_DEBUG_L1	
++ //#define NTN_DEBUG_L2		
++ //#define NTN_DEBUG_TS1
++ //#define NTN_DEBUG_TS2
++ 
++ //#define NTN_LOAD_FW
++ 
++ #define VENDOR_ID 												0x1179
++ #define DEVICE_ID 												0x021a
++ #define DEVICE_NAME 											"TSB_NEUTRINO_PCIE"
++ 
++ #define DRV_NAME_NTN_PCI              	 	"neutrino_pcie"
++ #define DRV_NAME_NTN_PCI_ETH         			"DWC_ETH_QOS"
++ #define DRV_NAME_NTN_PCI_CAN          	  "ntn_pci_can"
++ 
++ #define NTN_PCIE_ETH                     	0
++ #define NTN_PCIE_CAN                     	1
++ 
++ struct ntn_mf_dev;
++ struct ntn_mfd_handle {
++ 	struct ntn_mf_dev              *pmdev;
++ 	struct device  									dev; 
++ };
++ 
++ struct ntn_mf_dev {
++ 	struct pci_dev                  *pci;
++   unsigned int                    id;
++ 
++   /* pci resources */
++   unsigned long                   addr;
++   unsigned long 									remap_reg_addr;
++   unsigned long                   remap_flash_addr;
++   unsigned long                   remap_sram_addr;
++ 
++   bool                            msi_en;
++   bool                            msi_shared;
++   int                             irq_eth;
++   int                             irq_can;
++ };
++ 
++ 
++ void ntn_pci_write_register(struct ntn_mf_dev *pmdev, u32 addr, u32 data);
++ void ntn_pci_read_register(struct ntn_mf_dev *pmdev, u32 addr, u32 *data);
++ 
++ 
++ #endif
++ 
++ 
+diff -crB --new-file linux-3.19.8-100.fc20.x86_64/include/uapi/linux/can.h linux-3.19.8-100.fc20.x86_64_ntn/include/uapi/linux/can.h
+*** linux-3.19.8-100.fc20.x86_64/include/uapi/linux/can.h	2015-02-08 23:54:22.000000000 -0300
+--- linux-3.19.8-100.fc20.x86_64_ntn/include/uapi/linux/can.h	2016-06-27 11:39:36.568277126 -0400
+***************
+*** 191,194 ****
+--- 191,324 ----
+  
+  #define CAN_INV_FILTER 0x20000000U /* to be set in can_filter.can_id */
+  
++ /* Private IOCTL for handling device specific task */
++ #define CANFD_PRV_IOCTL   SIOCDEVPRIVATE
++ 
++ /* Maximum standard filter element can be stored in message ram */
++ #define MAX_STD_FILTER_ELEMENT  128
++ 
++ /* Maximum extended filter element can be stored in message ram */
++ #define MAX_EXD_FILTER_ELEMENT  64
++ 
++ /**
++  * enum ePRIV_IOCTL - IOCTL command for High Priority Messaging configration
++  *
++  * Description:
++  * To receive HPM interrupt, following are the mandatory configurations
++  */
++ typedef enum {
++         HPM_ENABLE    = 1, /* for HPM interrupt enable */
++         GLOBAL_FILTER = 2, /* for Global filter config register */
++         STD_FILTER    = 3, /* for standard filter config register and message ram */
++         EXTD_FILTER   = 4, /* for extendard filter config register and message ram */
++         INVALID_IOCTL,
++ } ePRIV_IOCTL;
++ 
++ /**
++  * enum eNonMatchFramesGFC: Accept Non-matching Frames (GFC Register)
++  *
++  * Description:
++  * Non-matching frames configuration for standard and extended elements
++  */
++ typedef enum {
++   	ACCEPT_NON_MATCHING_FRAMES_IN_RX_FIFO0 = 0x0,
++  	ACCEPT_NON_MATCHING_FRAMES_IN_RX_FIFO1 = 0x1,
++   	REJECT_NON_MATCHING_FRAMES             = 0x3,
++ 	INVALID_NON_MATCH,
++ } eNonMatchFramesGFC;
++ 
++ /**
++  * enum eFILTERTYPE: Filter Type configruation
++  *
++  * Description:
++  * Filter type configuration in message ram filter element structure
++  */
++ typedef enum {
++         RANGEFILTER   = 0, /* Range filter from SF1ID to SF2ID (SF2ID ..SF1ID) */
++         DUALFILTER    = 1, /* Dual ID filter for SF1ID or SF2ID */
++         CLASSICFILTER = 2, /* Classic filter: SF1ID = filter, SF2ID = mask */
++         INVALID_FILTER,    /* Extended filter supports 0x03, but code does not have support */
++ } eFILTERTYPE;
++ 
++ /** 
++  * enum eFILTERCONFIG:  Filter element configuration
++  *
++  * Description:
++  * Filter element configuration in message ram filter element strcuture
++  */
++ typedef enum {
++         FILTER_ELEMENT_DISABLE       = 0x0, /* Disable filter element */
++         FILTER_ELEMENT_STORE_IN_FIFO0 = 0x1, /* Store in Rx FIFO 0 if filter matches */
++         FILTER_ELEMENT_STORE_IN_FIFO1 = 0x2, /* Not Supported - Store in Rx FIFO 1 if filter matches */
++         FILTER_ELEMENT_REJECT_ID      = 0x3, /* Reject ID if filter matches */
++         FILTER_ELEMENT_SET_PRIORITY   = 0x4, /* Set priority if filter matches */
++ 	/* Set priority and store in FIFO 0 if filter matches */
++         FILTER_ELEMENT_SET_PRIORITY_AND_STORE_IN_FIFO0 = 0x5,
++ 	/* Not supported - Store into Rx Buffer or as debug message, configuration of SFT[1:0] ignored */
++         FILTER_ELEMENT_SET_PRIORITY_AND_STORE_IN_FIFO1 = 0x6,
++ 	/* Not supported - Store into Rx Buffer or as debug message, configuration of SFT[1:0] ignored */
++         FILTER_ELEMENT_STORE_IN_RX_BUFFER_OR_DEBUiG_MSG = 0x7,
++ 	INVALID_FEC,
++ } eFILTERCONFIG;
++ 
++ /** 
++  * struct ifr_gfilter_data: Global filter register
++  * @ANFS : Accept Non-matching Frames Standard
++  * @ANFE : Accept Non-matching Frames Extended
++  * @RRFS : Reject Remote Frames Standard
++  * @RRFE : Reject Remote Frames Extended
++  *
++  * Description:
++  * Bit fields of Global configuration register
++  */
++ typedef struct {
++         eNonMatchFramesGFC ANFS;
++         eNonMatchFramesGFC ANFE;
++         __u8 RRFS;
++         __u8 RRFE;
++ } ifr_gfilter_data;
++ 
++ /**
++  * struct ifr_filter_cfg: Filter configuration register
++  * @numelements: Numbers elements to configured in message ram for standard/extended
++  */
++ typedef struct {
++         __u8 numelements;
++ } ifr_filter_cfg;
++ 
++ /**
++  * struct ifr_filter_data: Filter element structure
++  * @index : filter element will be stored in the message
++  *          RAM at an offset calculated with this index
++  * @filtertype : Filter type
++  * @fec	: Standard/Extended Filter element configuration
++  */
++ typedef struct {
++         __u8 index;
++         eFILTERTYPE filtertype;
++         eFILTERCONFIG fec;
++         __u32 filterid1;
++         __u32  filterid2;
++ } ifr_filter_data;
++ 
++ /**
++  * sturct ifr_data_struct: Overall structure to pass IOCTL data
++  * @cmd : IOCTL command
++  * @isHPM : HPM to be enabled or disabled
++  * @gfilter : Global filter config register
++  * @stdfiltercfg: Standard filter config register
++  * @extfiltercfg: Extended filter config register
++  * @stdfilterele : Standard filter element
++  * @extfilterele : Extended filter element
++  */
++ struct ifr_data_struct {
++ 	ePRIV_IOCTL cmd;
++ 	__u8 isHPM;
++ 	ifr_gfilter_data *gfilter;
++ 	ifr_filter_cfg *stdfiltercfg;
++ 	ifr_filter_cfg *extfiltercfg;
++ 	ifr_filter_data *stdfilterele;
++ 	ifr_filter_data *extfilterele;
++ };
++ 
+  #endif /* !_UAPI_CAN_H */
+diff -crB --new-file linux-3.19.8-100.fc20.x86_64/Makefile linux-3.19.8-100.fc20.x86_64_ntn/Makefile
+*** linux-3.19.8-100.fc20.x86_64/Makefile	2016-06-27 11:36:23.303693266 -0400
+--- linux-3.19.8-100.fc20.x86_64_ntn/Makefile	2016-06-27 11:39:36.569277114 -0400
+***************
+*** 1,7 ****
+  VERSION = 3
+  PATCHLEVEL = 19
+  SUBLEVEL = 8
+! EXTRAVERSION =
+  NAME = Diseased Newt
+  
+  # *DOCUMENTATION*
+--- 1,7 ----
+  VERSION = 3
+  PATCHLEVEL = 19
+  SUBLEVEL = 8
+! EXTRAVERSION = -ntn.eth.can
+  NAME = Diseased Newt
+  
+  # *DOCUMENTATION*
